@@ -1,38 +1,101 @@
-use std::str::FromStr;
-
 use anyhow::Result;
+use constants::{CRT_MINT, CRT_VAULT};
 use jupiter_amm_interface::{
     try_get_account_data, AccountMap, Amm, AmmContext, KeyedAccount, Quote, QuoteParams, Swap,
     SwapAndAccountMetas, SwapParams,
 };
 use rust_decimal::Decimal;
-use solana_sdk::{program_pack::Pack, pubkey::Pubkey};
-use spl_token::state::Account as TokenAccount;
+use solana_sdk::{
+    instruction::AccountMeta, program_pack::Pack, pubkey::Pubkey,
+    system_program::ID as SystemProgramId,
+};
+use spl_token::state::{Account as TokenAccount, Mint};
+
+mod constants;
+use constants::*;
+
+mod math;
+use math::*;
 
 pub struct CarrotAmm {
-    key: Pubkey,
+    vault: Pubkey,
     label: String,
     program_id: Pubkey,
     crt_mint: Pubkey,
     usdc_mint: Pubkey,
     usdc_mint_ata: Pubkey,
-    reserves: [u64; 1],
-    //usdt_mint: Pubkey,
-    //pyusd_mint: Pubkey,
+    reserves: [u64; 2],
+}
+
+impl Clone for CarrotAmm {
+    fn clone(&self) -> Self {
+        CarrotAmm {
+            vault: self.vault,
+            label: self.label.clone(),
+            program_id: self.program_id,
+            crt_mint: self.crt_mint,
+            usdc_mint: self.usdc_mint,
+            usdc_mint_ata: self.usdc_mint_ata,
+            reserves: self.reserves,
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct CarrotSwap {
+    pub source_mint: Pubkey,
+    pub user_source: Pubkey,
+    pub user_destination: Pubkey,
+    pub user_transfer_authority: Pubkey,
+}
+
+impl From<CarrotSwap> for Vec<AccountMeta> {
+    fn from(accounts: CarrotSwap) -> Self {
+        let (source_account, destination_account) = if accounts.source_mint.eq(&USDC_MINT) {
+            (accounts.user_source, accounts.user_destination)
+        } else {
+            (accounts.user_destination, accounts.user_source)
+        };
+
+        let mut account_metas = vec![
+            AccountMeta::new(CARROT_PROGRAM, false),
+            AccountMeta::new(CRT_VAULT, false),
+            AccountMeta::new(CRT_MINT, false),
+            AccountMeta::new(destination_account, false),
+            AccountMeta::new_readonly(USDC_MINT, false),
+            AccountMeta::new(USDC_VAULT_ATA, false),
+            AccountMeta::new(source_account, true),
+            AccountMeta::new(accounts.user_transfer_authority, false),
+            AccountMeta::new(SystemProgramId, false),
+            AccountMeta::new_readonly(TOKEN_PROGRAM, false),
+            AccountMeta::new_readonly(TOKEN_22_PROGRAM, false),
+            AccountMeta::new_readonly(CARROT_LOG_PROGRAM, false),
+        ];
+
+        // Add remaining accounts depending on assets the vault holds
+        account_metas.extend_from_slice(&[
+            AccountMeta::new_readonly(USDC_VAULT_ATA, false),
+            AccountMeta::new_readonly(USDC_ORACLE, false),
+            AccountMeta::new_readonly(USDT_VAULT_ATA, false),
+            AccountMeta::new_readonly(USDT_ORACLE, false),
+            AccountMeta::new_readonly(PYUSD_VAULT_ATA, false),
+            AccountMeta::new_readonly(PYUSD_ORACLE, false),
+        ]);
+
+        account_metas
+    }
 }
 
 impl Amm for CarrotAmm {
     fn from_keyed_account(keyed_account: &KeyedAccount, _amm_context: &AmmContext) -> Result<Self> {
         Ok(CarrotAmm {
-            key: keyed_account.key,
+            vault: keyed_account.key,
             label: "CarrotAmm".to_string(),
             program_id: keyed_account.account.owner,
-            crt_mint: Pubkey::from_str("CRTx1JouZhzSU6XytsE42UQraoGqiHgxabocVfARTy2s").unwrap(),
-            usdc_mint: Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap(),
-            usdc_mint_ata: Pubkey::from_str("").unwrap(),
-            reserves: [0],
-            //usdt_mint: Pubkey::from_str("Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB").unwrap(),
-            //pyusd_mint: Pubkey::from_str("2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo").unwrap(),
+            crt_mint: CRT_MINT,
+            usdc_mint: USDC_MINT,
+            usdc_mint_ata: USDC_VAULT_ATA,
+            reserves: [0, 0],
         })
     }
 
@@ -45,55 +108,43 @@ impl Amm for CarrotAmm {
     }
 
     fn key(&self) -> Pubkey {
-        self.key
+        self.vault
     }
 
     fn get_reserve_mints(&self) -> Vec<Pubkey> {
-        vec![
-            self.crt_mint,
-            self.usdc_mint,
-            //self.usdt_mint,
-            //self.pyusd_mint,
-        ]
+        vec![self.crt_mint, self.usdc_mint]
     }
 
     fn get_accounts_to_update(&self) -> Vec<Pubkey> {
-        vec![self.key, self.usdc_mint_ata]
+        vec![self.vault, self.usdc_mint_ata, self.crt_mint]
     }
 
     fn update(&mut self, account_map: &AccountMap) -> Result<()> {
-
         let usdc_mint_ata_data = try_get_account_data(account_map, &self.usdc_mint_ata)?;
         let usdc_mint_ata = TokenAccount::unpack(usdc_mint_ata_data)?;
 
-        self.reserves = [
-            usdc_mint_ata.amount.into(),
-        ];
+        let crt_mint_data = try_get_account_data(account_map, &self.crt_mint)?;
+        let crt_mint = Mint::unpack(crt_mint_data)?;
+
+        self.reserves = [usdc_mint_ata.amount.into(), crt_mint.supply.into()];
 
         Ok(())
     }
 
     fn quote(&self, quote_params: &QuoteParams) -> Result<Quote> {
-        //let (trade_direction, swap_source_amount, swap_destination_amount) =
-        //    if quote_params.input_mint == self.reserve_mints[0] {
-        //        (TradeDirection::AtoB, self.reserves[0], self.reserves[1])
-        //    } else {
-        //        (TradeDirection::BtoA, self.reserves[1], self.reserves[0])
-        //    };
-
-        //let swap_result = get_swap_curve_result(
-        //    &self.state.swap_curve,
-        //    quote_params.amount,
-        //    swap_source_amount,
-        //    swap_destination_amount,
-        //    trade_direction,
-        //    &self.state.fees,
-        //)?;
+        let fee_pct = if quote_params.input_mint.eq(&USDC_MINT) {
+            // issue
+            Decimal::ZERO
+        } else {
+            // redeem
+            // only a fee to redeem
+            Decimal::new(1, 4) // 0.01%
+        };
 
         Ok(Quote {
-            fee_pct: Decimal::ZERO,
+            fee_pct,
             in_amount: quote_params.amount,
-            out_amount: quote_params.amount,
+            out_amount: 0,
             fee_amount: 0,
             fee_mint: quote_params.input_mint,
             ..Quote::default()
@@ -109,26 +160,13 @@ impl Amm for CarrotAmm {
             ..
         } = swap_params;
 
-        let (swap_source, swap_destination) = if source_mint.eq(&self.crt_mint) {
-            (self.state.token_a, self.state.token_b)
-        } else {
-            (self.state.token_b, self.state.token_a)
-        };
-
         Ok(SwapAndAccountMetas {
             swap: Swap::TokenSwap,
-            account_metas: TokenSwap {
-                token_swap_program: self.program_id,
-                token_program: spl_token::id(),
-                swap: self.key,
-                authority: self.get_authority(),
+            account_metas: CarrotSwap {
+                user_destination: *destination_token_account,
+                user_source: *source_token_account,
                 user_transfer_authority: *token_transfer_authority,
-                source: *source_token_account,
-                destination: *destination_token_account,
-                pool_mint: self.state.pool_mint,
-                pool_fee: self.state.pool_fee_account,
-                swap_destination,
-                swap_source,
+                source_mint: *source_mint,
             }
             .into(),
         })
