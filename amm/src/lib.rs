@@ -17,6 +17,8 @@ use constants::*;
 mod math;
 use math::*;
 
+mod state;
+
 pub struct CarrotAmm {
     vault: Pubkey,
     label: String,
