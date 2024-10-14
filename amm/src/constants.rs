@@ -1,4 +1,3 @@
-use lazy_static::lazy_static;
 use solana_sdk::{pubkey, pubkey::Pubkey};
 
 // mints
@@ -27,3 +26,6 @@ pub const CARROT_LOG_PROGRAM: Pubkey = pubkey!("7Mc3vSdRWoThArpni6t5W4XjvQf4BuMn
 // other programs
 pub const TOKEN_PROGRAM: Pubkey = pubkey!("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
 pub const TOKEN_22_PROGRAM: Pubkey = pubkey!("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
+
+// amm label
+pub const AMM_LABEL: &str = "CarrotAmm";

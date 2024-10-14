@@ -9,7 +9,7 @@ use solana_sdk::{
     instruction::AccountMeta, program_pack::Pack, pubkey::Pubkey,
     system_program::ID as SystemProgramId,
 };
-use spl_token::state::{Account as TokenAccount, GenericTokenAccount, Mint};
+use spl_token::state::Account as TokenAccount;
 use spl_token_2022::{
     extension::StateWithExtensionsOwned,
     state::{Account as TokenAccount22, Mint as Mint22},
@@ -31,6 +31,19 @@ pub struct CarrotAmm {
     pub vault_state: Vault,
     pub shares_state: Option<Shares>,
     pub asset_state: Vec<AssetState>,
+}
+
+impl CarrotAmm {
+    pub fn new(vault_state: Vault) -> Self {
+        CarrotAmm {
+            label: AMM_LABEL.to_owned(),
+            program_id: CARROT_PROGRAM,
+            vault: CRT_VAULT,
+            vault_state,
+            asset_state: vec![],
+            shares_state: None,
+        }
+    }
 }
 
 impl Clone for CarrotAmm {
@@ -95,14 +108,7 @@ impl Amm for CarrotAmm {
     fn from_keyed_account(keyed_account: &KeyedAccount, _amm_context: &AmmContext) -> Result<Self> {
         let vault_state = Vault::load(&keyed_account.account.data)?;
 
-        Ok(CarrotAmm {
-            label: "CarrotAmm".to_string(),
-            program_id: keyed_account.account.owner,
-            vault: keyed_account.key,
-            vault_state,
-            asset_state: vec![],
-            shares_state: None,
-        })
+        Ok(CarrotAmm::new(vault_state))
     }
 
     fn label(&self) -> String {
@@ -182,69 +188,107 @@ impl Amm for CarrotAmm {
     fn quote(&self, quote_params: &QuoteParams) -> Result<Quote> {
         let vault_tvl = self.vault_state.get_tvl(&self.asset_state);
 
-        let (out_amount, fee_pct) = if quote_params.input_mint.eq(&self.vault_state.shares) {
-            // if input is shares, its a redemption operation
-            let redeem_amount_usd = usd_earned(
-                quote_params.amount,
-                self.shares_state.unwrap().supply,
-                vault_tvl,
-            );
+        let shares_state = self.shares_state.unwrap();
 
-            let asset_state = self
-                .asset_state
-                .iter()
-                .find(|a| a.mint.eq(&quote_params.output_mint))
+        // calculate unminted performance fees, used to adjust the shares supply
+        let accumulated_performance_fee = self.vault_state.calculate_accumulated_performance_fee(
+            &[],
+            shares_state.supply,
+            shares_state.decimals,
+            vault_tvl,
+        )?;
+
+        // adjust shares supply by unminted fees accrued
+        // this is just used to have an accurate supply to calculate the management fee
+        let adjusted_shares_supply_before_mgmt_fee = self
+            .vault_state
+            .fee
+            .adjust_shares_by_fees(shares_state.supply, accumulated_performance_fee);
+
+        // calculate management fee before deposit
+        // TODO: figure out how to test this
+        let _fee_amount = self.vault_state.fee.calculate_management_fee(
+            vault_tvl,
+            adjusted_shares_supply_before_mgmt_fee,
+            shares_state.decimals,
+        );
+
+        // adjust shares supply by unminted fees accrued
+        // this is now the true adjusted shares supply because it takes into account the latest fee data
+        let adjusted_shares_supply = self
+            .vault_state
+            .fee
+            .adjust_shares_by_fees(shares_state.supply, accumulated_performance_fee);
+
+        let (out_amount, fee_pct, fee_amount) =
+            if quote_params.input_mint.eq(&self.vault_state.shares) {
+                // calculate redemption fee
+                let (adjusted_after_redemption_fee_amount, redemption_fee_amount) = self
+                    .vault_state
+                    .fee
+                    .calculate_redemption_fee(quote_params.amount);
+
+                // if input is shares, its a redemption operation
+                let redeem_amount_usd = usd_earned(
+                    quote_params.amount,
+                    adjusted_after_redemption_fee_amount,
+                    vault_tvl,
+                );
+
+                // TODO make this a method
+                let asset_state = self
+                    .asset_state
+                    .iter()
+                    .find(|a| a.mint.eq(&quote_params.output_mint))
+                    .unwrap();
+
+                let asset_amount = calc_token_amount(
+                    redeem_amount_usd,
+                    asset_state.mint_decimals,
+                    asset_state.oracle_price,
+                    asset_state.oracle_price_expo,
+                    false,
+                )
                 .unwrap();
 
-            let asset_amount = calc_token_amount(
-                redeem_amount_usd,
-                asset_state.mint_decimals,
-                asset_state.oracle_price,
-                asset_state.oracle_price_expo,
-                false,
-            )
-            .unwrap();
+                (
+                    asset_amount,
+                    Decimal::new(self.vault_state.fee.redemption_fee_bps.into(), 4),
+                    redemption_fee_amount,
+                )
+            } else {
+                // if input is not shares, its an issue operation
+                let asset = self.vault_state.get_asset_by_mint(quote_params.input_mint);
+                let (price, price_expo) =
+                    get_price_usd_from_pyth_oracle(&asset.oracle, &[], RoundingMode::Avg);
+                let deposit_usd = calc_usd_amount(
+                    quote_params.amount,
+                    asset.decimals,
+                    price,
+                    price_expo,
+                    false,
+                )
+                .unwrap();
 
-            (asset_amount, Decimal::new(1, 4))
-        } else {
-            // if input is not shares, its an issue operation
-            let asset = self.vault_state.get_asset_by_mint(quote_params.input_mint);
-            let (price, price_expo) =
-                get_price_usd_from_pyth_oracle(&asset.oracle, &[], RoundingMode::Avg);
-            let deposit_usd = calc_usd_amount(
-                quote_params.amount,
-                asset.decimals,
-                price,
-                price_expo,
-                false,
-            )
-            .unwrap();
+                // determine shares owed to depositor
+                let shares_owed = shares_earned(
+                    deposit_usd,
+                    adjusted_shares_supply,
+                    shares_state.decimals,
+                    vault_tvl,
+                    false,
+                );
 
-            // determine shares owed to depositor
-            let shares_owed = shares_earned(
-                deposit_usd,
-                self.shares_state.unwrap().supply,
-                self.shares_state.unwrap().decimals,
-                vault_tvl,
-                false,
-            );
-
-            (shares_owed, Decimal::ZERO)
-        };
-
-        let fee_amount = if fee_pct.is_zero() {
-            0
-        } else {
-            // TODO: not exactly sure what to put here
-            0
-        };
+                // TODO: 0 should probably be a variable when i write tests for manage/perf fees even though they're currently disabled
+                (shares_owed, Decimal::ZERO, 0)
+            };
 
         Ok(Quote {
             fee_pct,
             in_amount: quote_params.amount,
             out_amount,
             fee_amount,
-            fee_mint: quote_params.input_mint,
+            fee_mint: CRT_MINT,
             ..Quote::default()
         })
     }

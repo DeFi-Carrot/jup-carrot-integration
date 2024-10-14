@@ -2,9 +2,9 @@ use anyhow::Result;
 use std::ops::Add;
 
 //use pyth_solana_receiver_sdk::price_update::PriceUpdateV2;
-use solana_sdk::{account_info::AccountInfo, pubkey::Pubkey};
+use solana_sdk::{account_info::AccountInfo, clock::Clock, pubkey::Pubkey, sysvar::Sysvar};
 
-use crate::calc_usd_amount;
+use crate::{calc_usd_amount, shares_earned};
 
 //
 // accounts
@@ -116,8 +116,47 @@ impl Vault {
         total_strategy_balance.add(total_reserve_balance)
     }
 
+    pub fn calculate_accumulated_performance_fee(
+        &self,
+        remaining_accounts: &[AccountInfo],
+        shares_supply: u64,
+        shares_decimals: u8,
+        vault_tvl: u128,
+    ) -> Result<u64> {
+        let mut performance_fee_accumulated: u64 = 0;
+        for strategy in self.strategies.iter() {
+            // find strategy asset
+            let asset = self.get_asset_by_id(strategy.asset_id);
+
+            // get current asset price in usd
+            let (asset_price, asset_price_expo) =
+                get_price_usd_from_pyth_oracle(&asset.oracle, &[], RoundingMode::Avg);
+
+            // calculate performance fee for each strategy
+            let strategy_performance_fee = self.fee.calculate_performance_fee(
+                strategy.net_earnings,
+                asset_price,
+                asset_price_expo,
+                asset.decimals,
+                shares_supply,
+                shares_decimals,
+                vault_tvl,
+            );
+            performance_fee_accumulated += strategy_performance_fee;
+        }
+
+        Ok(performance_fee_accumulated)
+    }
+
     pub fn get_asset_by_mint(&self, asset_mint: Pubkey) -> &Asset {
         self.assets.iter().find(|a| a.mint.eq(&asset_mint)).unwrap()
+    }
+
+    fn get_asset_by_id(&self, asset_id: u16) -> &Asset {
+        self.assets
+            .iter()
+            .find(|a| a.asset_id.eq(&asset_id))
+            .unwrap()
     }
 }
 
@@ -233,6 +272,8 @@ impl Fee {
     // Assuming the SPACE constant for Fee is defined as the sum of its fields' sizes
     pub const SPACE: usize = 2 + 8 + 2 + 8 + 8 + 2; // Example, adjust based on actual sizes
 
+    const SECONDS_IN_YEAR: f64 = 31557600.0;
+
     pub fn load(account_data: &[u8]) -> Result<Self> {
         assert_eq!(account_data.len(), Self::SPACE);
 
@@ -268,6 +309,127 @@ impl Fee {
             management_fee_accumulated,
             performance_fee_bps,
         })
+    }
+
+    // returns the number of shares that should be minted to the fee account
+    // increments accumulated store
+    pub fn calculate_management_fee(
+        &self,
+        tvl: u128,
+        shares_supply: u64,
+        shares_decimals: u8,
+    ) -> u64 {
+        let current_time = Clock::get().unwrap().unix_timestamp;
+
+        // require a delta of over 60 seconds
+        let time_delta = current_time - self.management_fee_last_update;
+        if time_delta <= 60 {
+            return 0;
+        }
+
+        // Calculate elapsed time in seconds
+        let elapsed_seconds = time_delta as u128;
+
+        // Calculate fee in USD cents using integer arithmetic
+        let fee_usd_cents = (self.calc_management_fee(tvl) as u128 * elapsed_seconds)
+            / Fee::SECONDS_IN_YEAR as u128;
+
+        //// update timestamp
+        //self.management_fee_last_update = current_time;
+
+        if fee_usd_cents == 0 {
+            return 0;
+        }
+
+        // convert usd cents to shares ui based on NAV
+        let shares_amount = shares_earned(fee_usd_cents, shares_supply, shares_decimals, tvl, true);
+
+        //// increment accumulated store
+        //self.management_fee_accumulated += shares_amount;
+
+        shares_amount
+    }
+
+    // returns the shares amount of the performance fee that should be minted to the fee account
+    pub fn calculate_performance_fee(
+        &self,
+        net_earnings: i64,
+        asset_price: i64,
+        asset_price_expo: i32,
+        asset_decimals: u8,
+        shares_supply: u64,
+        shares_decimals: u8,
+        vault_tvl: u128,
+    ) -> u64 {
+        // if we lost/didnt make any money dont charge a fee
+        if net_earnings.le(&0) {
+            return 0;
+        };
+
+        // calculate value of earnings in usd
+        let net_earnings_usd = calc_usd_amount(
+            net_earnings as u64,
+            asset_decimals,
+            asset_price,
+            asset_price_expo,
+            true,
+        )
+        .unwrap();
+
+        // calculate performance fee in usd
+        let fee_amount_usd = self.calc_performance_fee(net_earnings_usd);
+
+        let fee_amount_shares = shares_earned(
+            fee_amount_usd,
+            shares_supply,
+            shares_decimals,
+            vault_tvl,
+            true,
+        );
+
+        fee_amount_shares
+    }
+
+    // returns (remaining_amount after fee, fee_amount)
+    pub fn calculate_redemption_fee(&self, redemption_amount: u64) -> (u64, u64) {
+        if self.redemption_fee_bps == 0 {
+            return (redemption_amount, 0);
+        }
+
+        let (remaining_amount, fee_amount) = self.calc_redemption_fee(redemption_amount);
+        //self.redemption_fee_accumulated += fee_amount;
+
+        return (remaining_amount, fee_amount);
+    }
+
+    // inflates the shares_supply by the amount of unrealized fees accrued by the protocol
+    // performance fees is computed inside the ix, which is why we pass it in
+    pub fn adjust_shares_by_fees(
+        &self,
+        shares_supply: u64,
+        total_performance_fees_accumulated: u64,
+    ) -> u64 {
+        shares_supply
+            + total_performance_fees_accumulated
+            + self.management_fee_accumulated
+            + self.redemption_fee_accumulated
+    }
+
+    fn calc_management_fee(&self, tvl: u128) -> u128 {
+        ((tvl * self.management_fee_bps as u128 + 9_999) / 10_000) // round up
+            .try_into()
+            .unwrap()
+    }
+
+    fn calc_performance_fee(&self, net_earnings_usd: u128) -> u128 {
+        (net_earnings_usd * self.performance_fee_bps as u128 + 9_999) / 10_000 // round up
+    }
+
+    // return (remaining redemption amount after fee, fee amount taken)
+    fn calc_redemption_fee(&self, redemption_amount: u64) -> (u64, u64) {
+        let fee_amount = (redemption_amount * self.redemption_fee_bps as u64 + 9_999) / 10_000; // round up
+        let remaining_amount = redemption_amount - fee_amount;
+        (remaining_amount, fee_amount)
     }
 }
 

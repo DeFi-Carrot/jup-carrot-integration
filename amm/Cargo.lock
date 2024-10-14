@@ -118,7 +118,6 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "jupiter-amm-interface",
- "lazy_static",
  "rust_decimal",
  "serde",
  "serde_json",

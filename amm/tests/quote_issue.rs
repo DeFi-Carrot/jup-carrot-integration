@@ -1,8 +1,6 @@
 use amm::constants::{CARROT_PROGRAM, CRT_MINT, CRT_VAULT, USDC_MINT};
-use amm::state::{AssetState, Shares, Vault};
-use amm::CarrotAmm;
-use jupiter_amm_interface::Amm;
-use jupiter_amm_interface::{QuoteParams, SwapMode};
+use amm::{state::Vault, CarrotAmm};
+use jupiter_amm_interface::{Amm, QuoteParams, SwapMode};
 
 mod utils;
 use utils::*;
@@ -15,12 +13,12 @@ async fn test_quote_issue() {
     // parse vault state
     let vault_state: Vault = Vault::load(&account_map.get(&CRT_VAULT).unwrap().data).unwrap();
 
-    // Initialize CarrotAmm with dummy data
+    // init
     let mut carrot_amm = CarrotAmm {
         label: "CarrotAmm".to_string(),
         program_id: CARROT_PROGRAM,
         vault: CRT_VAULT,
-        vault_state: vault_state,
+        vault_state,
         shares_state: None,
         asset_state: vec![],
     };
