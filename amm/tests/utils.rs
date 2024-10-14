@@ -11,7 +11,13 @@ use std::io::Read;
 use std::path::Path;
 
 pub fn init_account_map() -> AccountMap {
-    let paths = ["tests/fixtures/vault.json", "tests/fixtures/shares.json"]; // Example paths
+    let paths = [
+        "tests/fixtures/vault.json",
+        "tests/fixtures/shares.json",
+        "tests/fixtures/vault_usdc_ata.json",
+        "tests/fixtures/vault_usdt_ata.json",
+        "tests/fixtures/vault_pyusd_ata.json",
+    ];
     let mut map = HashMap::new();
     for path in paths.iter() {
         let (address, account) = load_account(path);

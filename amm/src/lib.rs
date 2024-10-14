@@ -9,7 +9,11 @@ use solana_sdk::{
     instruction::AccountMeta, program_pack::Pack, pubkey::Pubkey,
     system_program::ID as SystemProgramId,
 };
-use spl_token::state::{Account as TokenAccount, Mint};
+use spl_token::state::{Account as TokenAccount, GenericTokenAccount, Mint};
+use spl_token_2022::{
+    extension::StateWithExtensionsOwned,
+    state::{Account as TokenAccount22, Mint as Mint22},
+};
 
 pub mod constants;
 use constants::*;
@@ -96,8 +100,8 @@ impl Amm for CarrotAmm {
             program_id: keyed_account.account.owner,
             vault: keyed_account.key,
             vault_state,
-            asset_state: vec![], // TODO: is this ok??
-            shares_state: None,  // TODO: is this ok??
+            asset_state: vec![],
+            shares_state: None,
         })
     }
 
@@ -138,25 +142,34 @@ impl Amm for CarrotAmm {
 
         // update shares state
         let mint_data = try_get_account_data(account_map, &self.vault_state.shares)?;
-        let mint = Mint::unpack(mint_data)?;
+        let mint = StateWithExtensionsOwned::<Mint22>::unpack(mint_data.to_vec()).unwrap();
         self.shares_state = Some(Shares {
             mint: self.vault_state.shares,
-            supply: mint.supply,
-            decimals: mint.decimals,
+            supply: mint.base.supply,
+            decimals: mint.base.decimals,
         });
 
         // update state for vault assets
         let mut asset_state: Vec<AssetState> = Vec::with_capacity(self.vault_state.assets.len());
         for asset in self.vault_state.assets.iter() {
             let ata_data = try_get_account_data(account_map, &asset.ata)?;
-            let ata = TokenAccount::unpack(ata_data)?;
+
+            // try to parse first as regular spl-token and if that errors try spl-token-2022
+            let ata_amount = match TokenAccount::unpack(ata_data) {
+                Ok(ata) => ata.amount,
+                Err(_) => {
+                    let ata =
+                        StateWithExtensionsOwned::<TokenAccount22>::unpack(ata_data.to_vec())?;
+                    ata.base.amount
+                }
+            };
 
             // TODO: parse oracle account
             asset_state.push(AssetState {
                 asset_id: asset.asset_id,
                 mint: asset.mint,
                 mint_decimals: asset.decimals,
-                ata_amount: ata.amount,
+                ata_amount,
                 oracle_price: 1_000_000_000,
                 oracle_price_expo: -9,
             });
