@@ -5,18 +5,18 @@ use std::str::FromStr;
 use jupiter_amm_interface::AccountMap;
 use serde_json::Value;
 use solana_sdk::account::Account;
-use solana_sdk::{pubkey::Pubkey, pubkey};
+use solana_sdk::pubkey::Pubkey;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
-pub const CARROT_PROGRAM: Pubkey = pubkey!("CarrotwivhMpDnm27EHmRLeQ683Z1PufuqEmBZvD282s");
-pub const CARROT_LOG_PROGRAM: Pubkey = pubkey!("7Mc3vSdRWoThArpni6t5W4XjvQf4BuMny1uC8b6VBn48");
-
 pub fn init_account_map() -> AccountMap {
     let paths = [
         "tests/fixtures/vault.json",
-        "tests/fixtures/shares.json",
+        "tests/fixtures/shares_mint.json",
+        "tests/fixtures/usdc_mint.json",
+        "tests/fixtures/usdt_mint.json",
+        "tests/fixtures/pyusd_mint.json",
         "tests/fixtures/vault_usdc_ata.json",
         "tests/fixtures/vault_usdt_ata.json",
         "tests/fixtures/vault_pyusd_ata.json",
