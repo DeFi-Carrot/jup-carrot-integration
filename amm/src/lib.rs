@@ -34,11 +34,11 @@ pub struct CarrotAmm {
 }
 
 impl CarrotAmm {
-    pub fn new(vault_state: Vault) -> Self {
+    pub fn new(vault: Pubkey, vault_state: Vault) -> Self {
         CarrotAmm {
             label: AMM_LABEL.to_owned(),
             program_id: CARROT_PROGRAM,
-            vault: CRT_VAULT,
+            vault,
             vault_state,
             asset_state: vec![],
             shares_state: None,
@@ -108,7 +108,7 @@ impl Amm for CarrotAmm {
     fn from_keyed_account(keyed_account: &KeyedAccount, _amm_context: &AmmContext) -> Result<Self> {
         let vault_state = Vault::load(&keyed_account.account.data)?;
 
-        Ok(CarrotAmm::new(vault_state))
+        Ok(CarrotAmm::new(keyed_account.key, vault_state))
     }
 
     fn label(&self) -> String {
@@ -174,7 +174,6 @@ impl Amm for CarrotAmm {
             let oracle_data = try_get_account_data(account_map, &asset.oracle)?;
             let oracle = PriceUpdateV2::load(oracle_data)?;
 
-            // TODO: parse oracle account
             asset_state.push(AssetState {
                 asset_id: asset.asset_id,
                 mint: asset.mint,

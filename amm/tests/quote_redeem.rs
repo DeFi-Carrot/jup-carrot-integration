@@ -6,7 +6,7 @@ mod utils;
 use utils::*;
 
 #[tokio::test]
-async fn test_quote_issue() {
+async fn test_quote_redeem() {
     // init account map from filesystem
     let account_map = init_account_map();
 
@@ -24,8 +24,8 @@ async fn test_quote_issue() {
 
     // Create QuoteParams for the test
     let quote_params = QuoteParams {
-        input_mint: USDC_MINT,
-        output_mint: CRT_MINT,
+        input_mint: CRT_MINT,
+        output_mint: USDC_MINT,
         amount,
         swap_mode: SwapMode::ExactIn,
     };

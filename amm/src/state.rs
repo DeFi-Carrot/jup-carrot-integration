@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use std::ops::Add;
 
 //use pyth_solana_receiver_sdk::price_update::PriceUpdateV2;
-use solana_sdk::{clock::Clock, pubkey::Pubkey, sysvar::Sysvar};
+use solana_sdk::pubkey::Pubkey;
 
 use crate::{calc_usd_amount, shares_earned};
 
@@ -311,7 +311,8 @@ impl Fee {
         shares_supply: u64,
         shares_decimals: u8,
     ) -> u64 {
-        let current_time = Clock::get().unwrap().unix_timestamp;
+        // TODO: can i do this?
+        let current_time = chrono::Utc::now().timestamp();
 
         // require a delta of over 60 seconds
         let time_delta = current_time - self.management_fee_last_update;
