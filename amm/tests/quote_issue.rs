@@ -1,4 +1,5 @@
-use amm::constants::{CARROT_PROGRAM, CRT_MINT, CRT_VAULT, USDC_MINT};
+use amm::constants::{CARROT_PROGRAM, CRT_MINT, CRT_VAULT, USDC_MINT, USDC_ORACLE};
+use amm::state::PriceUpdateV2;
 use amm::{state::Vault, CarrotAmm};
 use jupiter_amm_interface::{Amm, QuoteParams, SwapMode};
 

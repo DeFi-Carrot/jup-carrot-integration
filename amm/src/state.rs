@@ -1,8 +1,8 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use std::ops::Add;
 
 //use pyth_solana_receiver_sdk::price_update::PriceUpdateV2;
-use solana_sdk::{account_info::AccountInfo, clock::Clock, pubkey::Pubkey, sysvar::Sysvar};
+use solana_sdk::{clock::Clock, pubkey::Pubkey, sysvar::Sysvar};
 
 use crate::{calc_usd_amount, shares_earned};
 
@@ -118,7 +118,7 @@ impl Vault {
 
     pub fn calculate_accumulated_performance_fee(
         &self,
-        remaining_accounts: &[AccountInfo],
+        asset_state: &Vec<AssetState>,
         shares_supply: u64,
         shares_decimals: u8,
         vault_tvl: u128,
@@ -126,18 +126,17 @@ impl Vault {
         let mut performance_fee_accumulated: u64 = 0;
         for strategy in self.strategies.iter() {
             // find strategy asset
-            let asset = self.get_asset_by_id(strategy.asset_id);
-
-            // get current asset price in usd
-            let (asset_price, asset_price_expo) =
-                get_price_usd_from_pyth_oracle(&asset.oracle, &[], RoundingMode::Avg);
+            let asset = asset_state
+                .iter()
+                .find(|a| a.asset_id.eq(&strategy.asset_id))
+                .unwrap();
 
             // calculate performance fee for each strategy
             let strategy_performance_fee = self.fee.calculate_performance_fee(
                 strategy.net_earnings,
-                asset_price,
-                asset_price_expo,
-                asset.decimals,
+                asset.oracle_price,
+                asset.oracle_price_expo,
+                asset.mint_decimals,
                 shares_supply,
                 shares_decimals,
                 vault_tvl,
@@ -150,13 +149,6 @@ impl Vault {
 
     pub fn get_asset_by_mint(&self, asset_mint: Pubkey) -> &Asset {
         self.assets.iter().find(|a| a.mint.eq(&asset_mint)).unwrap()
-    }
-
-    fn get_asset_by_id(&self, asset_id: u16) -> &Asset {
-        self.assets
-            .iter()
-            .find(|a| a.asset_id.eq(&asset_id))
-            .unwrap()
     }
 }
 
@@ -500,59 +492,128 @@ pub struct AssetState {
 }
 
 #[derive(Clone, Copy)]
-pub struct Shares {
+pub struct SharesState {
     pub mint: Pubkey,
     pub supply: u64,
     pub decimals: u8,
 }
 
-pub fn get_price_usd_from_pyth_oracle(
-    oracle: &Pubkey,
-    remaining_accounts: &[AccountInfo],
-    rounding_mode: RoundingMode,
-) -> (i64, i32) {
-    // hardcode $1 for now
-    (1_000_000_000, -9)
-
-    //// find pyth oracle for asset
-    //let pyth_oracle_account_info = remaining_accounts
-    //    .iter()
-    //    .find(|ra| ra.key.eq(&oracle))
-    //    .unwrap();
-
-    //let pyth_oracle_account_data = pyth_oracle_account_info.try_borrow_data()?;
-
-    //let price_update = PriceUpdateV2::try_deserialize(&mut pyth_oracle_account_data.as_ref())?;
-
-    //let price_feed_id = price_update.price_message.feed_id;
-
-    //// just checking price staleness with this call
-    //let _ = price_update.get_price_no_older_than(&Clock::get().unwrap(), 300, &price_feed_id)?;
-
-    //// 5%
-    //let max_confidence_threshold: u64 = 5_000_000;
-
-    //// if confidence interval provided by pyth is outside our acceptable tolerance error
-    //require!(
-    //    price_update.price_message.ema_conf <= max_confidence_threshold,
-    //    CarrotError::InvalidPriceConf
-    //);
-
-    //// adjust the price by the confidence value based on rounding mode
-    //let adjusted_price = match rounding_mode {
-    //    RoundingMode::RoundUp => price_update
-    //        .price_message
-    //        .ema_price
-    //        .saturating_add(price_update.price_message.ema_conf as i64),
-    //    RoundingMode::RoundDown => price_update
-    //        .price_message
-    //        .ema_price
-    //        .saturating_sub(price_update.price_message.ema_conf as i64),
-    //    RoundingMode::Avg => price_update.price_message.ema_price,
-    //};
-
-    //Ok((adjusted_price, price_update.price_message.exponent))
+// pyth price account
+// manually copied and parsed because of dependency issues with pyth rust crate
+#[derive(Clone, Copy)]
+pub struct PriceUpdateV2 {
+    pub write_authority: Pubkey,
+    pub verification_level: VerificationLevel,
+    pub price_message: PriceFeedMessage,
+    pub posted_slot: u64,
 }
+
+impl PriceUpdateV2 {
+    pub const SPACE: usize = 8 + 32 + 2 + 32 + 8 + 8 + 4 + 8 + 8 + 8 + 8 + 8;
+
+    pub fn load(account_data: &[u8]) -> Result<Self> {
+        assert_eq!(account_data.len(), Self::SPACE);
+        let mut offset = 8;
+
+        let write_authority = Pubkey::new_from_array(account_data[offset..offset + 32].try_into()?);
+        offset += 32;
+
+        // parse verification level
+        let verification_byte = account_data[offset];
+        offset += 1; // Move past the verification level byte
+
+        let verification_level = match verification_byte {
+            0x01 => VerificationLevel::Full,
+            0x00 => {
+                // If Partial, assume the next byte indicates the number of signatures
+                let num_signatures = account_data[offset];
+                offset += 1; // Move past the num_signatures byte
+                VerificationLevel::Partial { num_signatures }
+            }
+            _ => return Err(anyhow!("Unknown verification level byte")),
+        };
+
+        let feed_id = account_data[offset..offset + 32].try_into()?;
+        offset += 32;
+
+        let price = i64::from_le_bytes(account_data[offset..offset + 8].try_into()?);
+        offset += 8;
+
+        let conf = u64::from_le_bytes(account_data[offset..offset + 8].try_into()?);
+        offset += 8;
+
+        let exponent = i32::from_le_bytes(account_data[offset..offset + 4].try_into()?);
+        offset += 4;
+
+        let publish_time = i64::from_le_bytes(account_data[offset..offset + 8].try_into()?);
+        offset += 8;
+
+        let prev_publish_time = i64::from_le_bytes(account_data[offset..offset + 8].try_into()?);
+        offset += 8;
+
+        let ema_price = i64::from_le_bytes(account_data[offset..offset + 8].try_into()?);
+        offset += 8;
+
+        let ema_conf = u64::from_le_bytes(account_data[offset..offset + 8].try_into()?);
+        offset += 8;
+
+        let posted_slot = u64::from_le_bytes(account_data[offset..offset + 8].try_into()?);
+
+        Ok(PriceUpdateV2 {
+            write_authority,
+            verification_level,
+            price_message: PriceFeedMessage {
+                feed_id,
+                price,
+                conf,
+                exponent,
+                publish_time,
+                prev_publish_time,
+                ema_price,
+                ema_conf,
+            },
+            posted_slot,
+        })
+    }
+
+    // Updated get_price_usd_from_pyth_oracle function
+    pub fn get_price_usd_from_pyth_oracle(&self, rounding_mode: RoundingMode) -> (i64, i32) {
+        // Adjust the price by the confidence value based on rounding mode
+        let adjusted_price = match rounding_mode {
+            RoundingMode::RoundUp => self
+                .price_message
+                .ema_price
+                .saturating_add(self.price_message.ema_conf as i64),
+            RoundingMode::RoundDown => self
+                .price_message
+                .ema_price
+                .saturating_sub(self.price_message.ema_conf as i64),
+            RoundingMode::Avg => self.price_message.ema_price,
+        };
+
+        (adjusted_price, self.price_message.exponent)
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum VerificationLevel {
+    Partial { num_signatures: u8 },
+    Full,
+}
+
+#[derive(Clone, Copy)]
+pub struct PriceFeedMessage {
+    pub feed_id: FeedId,
+    pub price: i64,
+    pub conf: u64,
+    pub exponent: i32,
+    pub publish_time: i64,
+    pub prev_publish_time: i64,
+    pub ema_price: i64,
+    pub ema_conf: u64,
+}
+
+pub type FeedId = [u8; 32];
 
 #[derive(Clone)]
 pub enum RoundingMode {

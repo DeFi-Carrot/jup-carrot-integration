@@ -17,6 +17,9 @@ pub fn init_account_map() -> AccountMap {
         "tests/fixtures/vault_usdc_ata.json",
         "tests/fixtures/vault_usdt_ata.json",
         "tests/fixtures/vault_pyusd_ata.json",
+        "tests/fixtures/usdc_pyth_oracle.json",
+        "tests/fixtures/usdt_pyth_oracle.json",
+        "tests/fixtures/pyusd_pyth_oracle.json",
     ];
     let mut map = HashMap::new();
     for path in paths.iter() {

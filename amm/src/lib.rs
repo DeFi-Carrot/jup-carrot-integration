@@ -20,7 +20,7 @@ use constants::*;
 
 mod math;
 use math::*;
-use state::{get_price_usd_from_pyth_oracle, AssetState, RoundingMode, Shares, Vault};
+use state::{AssetState, PriceUpdateV2, SharesState, Vault};
 
 pub mod state;
 
@@ -29,7 +29,7 @@ pub struct CarrotAmm {
     pub program_id: Pubkey,
     pub vault: Pubkey,
     pub vault_state: Vault,
-    pub shares_state: Option<Shares>,
+    pub shares_state: Option<SharesState>,
     pub asset_state: Vec<AssetState>,
 }
 
@@ -149,7 +149,7 @@ impl Amm for CarrotAmm {
         // update shares state
         let mint_data = try_get_account_data(account_map, &self.vault_state.shares)?;
         let mint = StateWithExtensionsOwned::<Mint22>::unpack(mint_data.to_vec()).unwrap();
-        self.shares_state = Some(Shares {
+        self.shares_state = Some(SharesState {
             mint: self.vault_state.shares,
             supply: mint.base.supply,
             decimals: mint.base.decimals,
@@ -170,14 +170,18 @@ impl Amm for CarrotAmm {
                 }
             };
 
+            // parse pyth oracle data
+            let oracle_data = try_get_account_data(account_map, &asset.oracle)?;
+            let oracle = PriceUpdateV2::load(oracle_data)?;
+
             // TODO: parse oracle account
             asset_state.push(AssetState {
                 asset_id: asset.asset_id,
                 mint: asset.mint,
                 mint_decimals: asset.decimals,
                 ata_amount,
-                oracle_price: 1_000_000_000,
-                oracle_price_expo: -9,
+                oracle_price: oracle.price_message.price,
+                oracle_price_expo: oracle.price_message.exponent,
             });
         }
         self.asset_state = asset_state;
@@ -192,7 +196,7 @@ impl Amm for CarrotAmm {
 
         // calculate unminted performance fees, used to adjust the shares supply
         let accumulated_performance_fee = self.vault_state.calculate_accumulated_performance_fee(
-            &[],
+            &self.asset_state,
             shares_state.supply,
             shares_state.decimals,
             vault_tvl,
@@ -258,14 +262,16 @@ impl Amm for CarrotAmm {
                 )
             } else {
                 // if input is not shares, its an issue operation
-                let asset = self.vault_state.get_asset_by_mint(quote_params.input_mint);
-                let (price, price_expo) =
-                    get_price_usd_from_pyth_oracle(&asset.oracle, &[], RoundingMode::Avg);
+                let asset = self
+                    .asset_state
+                    .iter()
+                    .find(|a| a.mint.eq(&quote_params.input_mint))
+                    .unwrap();
                 let deposit_usd = calc_usd_amount(
                     quote_params.amount,
-                    asset.decimals,
-                    price,
-                    price_expo,
+                    asset.mint_decimals,
+                    asset.oracle_price,
+                    asset.oracle_price_expo,
                     false,
                 )
                 .unwrap();
