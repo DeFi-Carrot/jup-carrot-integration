@@ -17,7 +17,7 @@ async fn test_spl_token_transfer() {
         processor!(Processor::process),
     );
     let mint = Keypair::new();
-    let destination = Keypair::new();
+    let destination: Keypair = Keypair::new();
 
     let rent = Rent::default();
 

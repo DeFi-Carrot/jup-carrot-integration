@@ -34,6 +34,7 @@ async fn test_issue() {
 
     let (mut banks_client, payer, recent_blockhash) = program_test.start().await;
 
+    // use only for testing
     let mint_authority = Keypair::from_bytes(&[
         6, 171, 218, 28, 81, 132, 195, 119, 106, 186, 21, 46, 6, 145, 196, 80, 151, 235, 245, 249,
         240, 102, 193, 29, 49, 156, 126, 163, 100, 6, 170, 23, 145, 253, 146, 149, 201, 100, 48,
@@ -45,7 +46,7 @@ async fn test_issue() {
     let payer_shares_ata = Keypair::new();
     let payer_usdc_ata = Keypair::new();
 
-    let transaction = Transaction::new_signed_with_payer(
+    let setup_payer_tx = Transaction::new_signed_with_payer(
         &[
             system_instruction::create_account(
                 &payer.pubkey(),
@@ -79,7 +80,7 @@ async fn test_issue() {
                 &token_program_id(),
                 &USDC_MINT,
                 &payer_usdc_ata.pubkey(),
-                &payer.pubkey(),
+                &mint_authority.pubkey(),
                 &[&mint_authority.pubkey()],
                 1_000_000_000_000,
             )
@@ -90,5 +91,10 @@ async fn test_issue() {
         recent_blockhash,
     );
 
-    banks_client.process_transaction(transaction).await.unwrap();
+    banks_client
+        .process_transaction_with_metadata(setup_payer_tx)
+        .await
+        .unwrap();
+
+    // quote a issue operation with jup amm
 }
