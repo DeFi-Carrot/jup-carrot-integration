@@ -174,13 +174,16 @@ impl Amm for CarrotAmm {
             let oracle_data = try_get_account_data(account_map, &asset.oracle)?;
             let oracle = PriceUpdateV2::load(oracle_data)?;
 
+            // get price adjusted by confidence interval
+            let (price, expo) = oracle.get_price_usd_from_pyth_oracle(state::RoundingMode::Avg);
+
             asset_state.push(AssetState {
                 asset_id: asset.asset_id,
                 mint: asset.mint,
                 mint_decimals: asset.decimals,
                 ata_amount,
-                oracle_price: oracle.price_message.price,
-                oracle_price_expo: oracle.price_message.exponent,
+                oracle_price: price,
+                oracle_price_expo: expo,
             });
         }
         self.asset_state = asset_state;
@@ -200,6 +203,10 @@ impl Amm for CarrotAmm {
             shares_state.decimals,
             vault_tvl,
         )?;
+        println!(
+            "accumulated_performance_fee: {}",
+            accumulated_performance_fee
+        );
 
         // adjust shares supply by unminted fees accrued
         // this is just used to have an accurate supply to calculate the management fee
@@ -207,21 +214,27 @@ impl Amm for CarrotAmm {
             .vault_state
             .fee
             .adjust_shares_by_fees(shares_state.supply, accumulated_performance_fee);
+        println!(
+            "adjusted_shares_supply_before_mgmt_fee: {}",
+            adjusted_shares_supply_before_mgmt_fee
+        );
 
         // calculate management fee before deposit
         // TODO: figure out how to test this
-        let _fee_amount = self.vault_state.fee.calculate_management_fee(
+        let fee_amount = self.vault_state.fee.calculate_management_fee(
             vault_tvl,
             adjusted_shares_supply_before_mgmt_fee,
             shares_state.decimals,
         );
+        println!("fee_amount: {}", fee_amount);
 
         // adjust shares supply by unminted fees accrued
         // this is now the true adjusted shares supply because it takes into account the latest fee data
-        let adjusted_shares_supply = self
-            .vault_state
-            .fee
-            .adjust_shares_by_fees(shares_state.supply, accumulated_performance_fee);
+        let adjusted_shares_supply = self.vault_state.fee.adjust_shares_by_fees(
+            shares_state.supply + fee_amount,
+            accumulated_performance_fee,
+        );
+        println!("adjusted_shares_supply: {}", adjusted_shares_supply);
 
         let (out_amount, fee_pct, fee_amount) =
             if quote_params.input_mint.eq(&self.vault_state.shares) {
@@ -266,6 +279,13 @@ impl Amm for CarrotAmm {
                     .iter()
                     .find(|a| a.mint.eq(&quote_params.input_mint))
                     .unwrap();
+                println!(
+                    "amount: {}, decimals: {}, price: {}, expo: {}",
+                    quote_params.amount,
+                    asset.mint_decimals,
+                    asset.oracle_price,
+                    asset.oracle_price_expo
+                );
                 let deposit_usd = calc_usd_amount(
                     quote_params.amount,
                     asset.mint_decimals,
@@ -274,6 +294,7 @@ impl Amm for CarrotAmm {
                     false,
                 )
                 .unwrap();
+                println!("deposit_usd: {}", deposit_usd);
 
                 // determine shares owed to depositor
                 let shares_owed = shares_earned(
@@ -283,6 +304,7 @@ impl Amm for CarrotAmm {
                     vault_tvl,
                     false,
                 );
+                println!("shares_owed: {}", shares_owed);
 
                 // TODO: 0 should probably be a variable when i write tests for manage/perf fees even though they're currently disabled
                 (shares_owed, Decimal::ZERO, 0)
