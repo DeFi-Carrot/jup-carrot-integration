@@ -62,6 +62,7 @@ impl Clone for CarrotAmm {
 #[derive(Copy, Clone, Debug)]
 pub struct CarrotSwap {
     pub source_mint: Pubkey,
+    pub destination_mint: Pubkey,
     pub user_source: Pubkey,
     pub user_destination: Pubkey,
     pub user_transfer_authority: Pubkey,
@@ -69,35 +70,71 @@ pub struct CarrotSwap {
 
 impl From<CarrotSwap> for Vec<AccountMeta> {
     fn from(accounts: CarrotSwap) -> Self {
-        let (source_account, destination_account) = if accounts.source_mint.eq(&USDC_MINT) {
-            (accounts.user_source, accounts.user_destination)
-        } else {
-            (accounts.user_destination, accounts.user_source)
-        };
+        let (user_shares_ata, user_asset_ata, asset_mint, vault_ata, token_program) =
+            if accounts.source_mint.eq(&CRT_MINT) {
+                // redeem operation
+
+                // determine the vault ata according to the destination mint requested by the user
+                let (vault_ata, token_program) = match accounts.destination_mint {
+                    USDC_MINT => (USDC_VAULT_ATA, TOKEN_PROGRAM),
+                    USDT_MINT => (USDT_VAULT_ATA, TOKEN_PROGRAM),
+                    PYUSD_MINT => (PYUSD_VAULT_ATA, TOKEN_22_PROGRAM),
+                    _ => panic!("unsupported destination mint {}", accounts.destination_mint),
+                };
+
+                // source is expected to be shares since thats the input
+                // destination is expected to be the asset since thats the output
+                (
+                    accounts.user_source,
+                    accounts.user_destination,
+                    accounts.destination_mint,
+                    vault_ata,
+                    token_program,
+                )
+            } else {
+                // issue operation
+
+                // determine the vault ata according to the destination mint requested by the user
+                let (vault_ata, token_program) = match accounts.source_mint {
+                    USDC_MINT => (USDC_VAULT_ATA, TOKEN_PROGRAM),
+                    USDT_MINT => (USDT_VAULT_ATA, TOKEN_PROGRAM),
+                    PYUSD_MINT => (PYUSD_VAULT_ATA, TOKEN_22_PROGRAM),
+                    _ => panic!("unsupported source mint {}", accounts.source_mint),
+                };
+
+                // source is expected to be asset since thats the input
+                // destination is expected to be the shares since thats the output
+                (
+                    accounts.user_destination,
+                    accounts.user_source,
+                    accounts.source_mint,
+                    vault_ata,
+                    token_program,
+                )
+            };
 
         let mut account_metas = vec![
-            AccountMeta::new(CARROT_PROGRAM, false),
             AccountMeta::new(CRT_VAULT, false),
             AccountMeta::new(CRT_MINT, false),
-            AccountMeta::new(destination_account, false),
-            AccountMeta::new_readonly(USDC_MINT, false),
-            AccountMeta::new(USDC_VAULT_ATA, false),
-            AccountMeta::new(source_account, true),
-            AccountMeta::new(accounts.user_transfer_authority, false),
-            AccountMeta::new(SystemProgramId, false),
-            AccountMeta::new_readonly(TOKEN_PROGRAM, false),
+            AccountMeta::new(user_shares_ata, false),
+            AccountMeta::new_readonly(asset_mint, false),
+            AccountMeta::new(vault_ata, false),
+            AccountMeta::new(user_asset_ata, false),
+            AccountMeta::new(accounts.user_transfer_authority, true),
+            AccountMeta::new_readonly(SystemProgramId, false),
+            AccountMeta::new_readonly(token_program, false),
             AccountMeta::new_readonly(TOKEN_22_PROGRAM, false),
             AccountMeta::new_readonly(CARROT_LOG_PROGRAM, false),
         ];
 
         // Add remaining accounts depending on assets the vault holds
         account_metas.extend_from_slice(&[
-            AccountMeta::new_readonly(USDC_VAULT_ATA, false),
             AccountMeta::new_readonly(USDC_ORACLE, false),
-            AccountMeta::new_readonly(USDT_VAULT_ATA, false),
             AccountMeta::new_readonly(USDT_ORACLE, false),
-            AccountMeta::new_readonly(PYUSD_VAULT_ATA, false),
             AccountMeta::new_readonly(PYUSD_ORACLE, false),
+            AccountMeta::new_readonly(USDC_VAULT_ATA, false),
+            AccountMeta::new_readonly(USDT_VAULT_ATA, false),
+            AccountMeta::new_readonly(PYUSD_VAULT_ATA, false),
         ]);
 
         account_metas
@@ -174,13 +211,16 @@ impl Amm for CarrotAmm {
             let oracle_data = try_get_account_data(account_map, &asset.oracle)?;
             let oracle = PriceUpdateV2::load(oracle_data)?;
 
+            // get price adjusted by confidence interval
+            let (price, expo) = oracle.get_price_usd_from_pyth_oracle(state::RoundingMode::Avg);
+
             asset_state.push(AssetState {
                 asset_id: asset.asset_id,
                 mint: asset.mint,
                 mint_decimals: asset.decimals,
                 ata_amount,
-                oracle_price: oracle.price_message.price,
-                oracle_price_expo: oracle.price_message.exponent,
+                oracle_price: price,
+                oracle_price_expo: expo,
             });
         }
         self.asset_state = asset_state;
@@ -189,7 +229,9 @@ impl Amm for CarrotAmm {
     }
 
     fn quote(&self, quote_params: &QuoteParams) -> Result<Quote> {
-        let vault_tvl = self.vault_state.get_tvl(&self.asset_state);
+        let is_redeem = quote_params.input_mint.eq(&self.vault_state.shares);
+        let round_up = !is_redeem;
+        let vault_tvl = self.vault_state.get_tvl(&self.asset_state, round_up);
 
         let shares_state = self.shares_state.unwrap();
 
@@ -210,7 +252,7 @@ impl Amm for CarrotAmm {
 
         // calculate management fee before deposit
         // TODO: figure out how to test this
-        let _fee_amount = self.vault_state.fee.calculate_management_fee(
+        let fee_amount = self.vault_state.fee.calculate_management_fee(
             vault_tvl,
             adjusted_shares_supply_before_mgmt_fee,
             shares_state.decimals,
@@ -218,102 +260,99 @@ impl Amm for CarrotAmm {
 
         // adjust shares supply by unminted fees accrued
         // this is now the true adjusted shares supply because it takes into account the latest fee data
-        let adjusted_shares_supply = self
-            .vault_state
-            .fee
-            .adjust_shares_by_fees(shares_state.supply, accumulated_performance_fee);
+        let adjusted_shares_supply = self.vault_state.fee.adjust_shares_by_fees(
+            shares_state.supply + fee_amount,
+            accumulated_performance_fee,
+        );
 
-        let (out_amount, fee_pct, fee_amount) =
-            if quote_params.input_mint.eq(&self.vault_state.shares) {
-                // calculate redemption fee
-                let (adjusted_after_redemption_fee_amount, redemption_fee_amount) = self
-                    .vault_state
-                    .fee
-                    .calculate_redemption_fee(quote_params.amount);
+        let (out_amount, fee_pct, fee_amount) = if is_redeem {
+            // calculate redemption fee
+            let (fee_adjusted_input_amount, redemption_fee_amount) = self
+                .vault_state
+                .fee
+                .calculate_redemption_fee(quote_params.amount);
 
-                // if input is shares, its a redemption operation
-                let redeem_amount_usd = usd_earned(
-                    quote_params.amount,
-                    adjusted_after_redemption_fee_amount,
-                    vault_tvl,
-                );
+            let redeem_amount_usd =
+                usd_earned(fee_adjusted_input_amount, adjusted_shares_supply, vault_tvl);
 
-                // TODO make this a method
-                let asset_state = self
-                    .asset_state
-                    .iter()
-                    .find(|a| a.mint.eq(&quote_params.output_mint))
-                    .unwrap();
-
-                let asset_amount = calc_token_amount(
-                    redeem_amount_usd,
-                    asset_state.mint_decimals,
-                    asset_state.oracle_price,
-                    asset_state.oracle_price_expo,
-                    false,
-                )
+            // TODO make this a method
+            let asset_state = self
+                .asset_state
+                .iter()
+                .find(|a| a.mint.eq(&quote_params.output_mint))
                 .unwrap();
 
-                (
-                    asset_amount,
-                    Decimal::new(self.vault_state.fee.redemption_fee_bps.into(), 4),
-                    redemption_fee_amount,
-                )
-            } else {
-                // if input is not shares, its an issue operation
-                let asset = self
-                    .asset_state
-                    .iter()
-                    .find(|a| a.mint.eq(&quote_params.input_mint))
-                    .unwrap();
-                let deposit_usd = calc_usd_amount(
-                    quote_params.amount,
-                    asset.mint_decimals,
-                    asset.oracle_price,
-                    asset.oracle_price_expo,
-                    false,
-                )
+            let asset_amount = calc_token_amount(
+                redeem_amount_usd,
+                asset_state.mint_decimals,
+                asset_state.oracle_price,
+                asset_state.oracle_price_expo,
+                false,
+            )
+            .unwrap();
+
+            (
+                asset_amount,
+                Decimal::new(self.vault_state.fee.redemption_fee_bps.into(), 4),
+                redemption_fee_amount,
+            )
+        } else {
+            // if input is not shares, its an issue operation
+            let asset = self
+                .asset_state
+                .iter()
+                .find(|a| a.mint.eq(&quote_params.input_mint))
                 .unwrap();
+            let deposit_usd = calc_usd_amount(
+                quote_params.amount,
+                asset.mint_decimals,
+                asset.oracle_price,
+                asset.oracle_price_expo,
+                false,
+            )
+            .unwrap();
 
-                // determine shares owed to depositor
-                let shares_owed = shares_earned(
-                    deposit_usd,
-                    adjusted_shares_supply,
-                    shares_state.decimals,
-                    vault_tvl,
-                    false,
-                );
+            // determine shares owed to depositor
+            let shares_owed = shares_earned(
+                deposit_usd,
+                adjusted_shares_supply,
+                shares_state.decimals,
+                vault_tvl,
+                false,
+            );
 
-                // TODO: 0 should probably be a variable when i write tests for manage/perf fees even though they're currently disabled
-                (shares_owed, Decimal::ZERO, 0)
-            };
+            // TODO: 0 should probably be a variable when i write tests for manage/perf fees even though they're currently disabled
+            (shares_owed, Decimal::ZERO, 0)
+        };
 
         Ok(Quote {
             fee_pct,
             in_amount: quote_params.amount,
             out_amount,
             fee_amount,
-            fee_mint: CRT_MINT,
+            fee_mint: quote_params.input_mint,
             ..Quote::default()
         })
     }
 
     fn get_swap_and_account_metas(&self, swap_params: &SwapParams) -> Result<SwapAndAccountMetas> {
         let SwapParams {
-            token_transfer_authority,
-            source_token_account,
-            destination_token_account,
             source_mint,
+            source_token_account,
+            destination_mint,
+            destination_token_account,
+            token_transfer_authority,
             ..
         } = swap_params;
 
         Ok(SwapAndAccountMetas {
             swap: Swap::TokenSwap,
             account_metas: CarrotSwap {
-                user_destination: *destination_token_account,
-                user_source: *source_token_account,
-                user_transfer_authority: *token_transfer_authority,
                 source_mint: *source_mint,
+                destination_mint: *destination_mint,
+                user_source: *source_token_account,
+                user_destination: *destination_token_account,
+                user_transfer_authority: *token_transfer_authority,
             }
             .into(),
         })

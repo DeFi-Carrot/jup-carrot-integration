@@ -81,7 +81,7 @@ impl Vault {
 
     // get total vault balance in usd
     // looks at strategy balances and ATA balances
-    pub fn get_tvl(&self, asset_state: &Vec<AssetState>) -> u128 {
+    pub fn get_tvl(&self, asset_state: &Vec<AssetState>, ceiling: bool) -> u128 {
         let total_strategy_balance: u128 = self
             .strategies
             .iter()
@@ -90,8 +90,7 @@ impl Vault {
                     .iter()
                     .find(|a| a.asset_id.eq(&strat.asset_id))
                     .unwrap();
-                let balance_usd = strat.get_balance_usd(state);
-
+                let balance_usd = strat.get_balance_usd(state, ceiling);
                 balance_usd
             })
             .collect::<Vec<u128>>()
@@ -106,7 +105,7 @@ impl Vault {
                     .iter()
                     .find(|a| a.asset_id.eq(&asset.asset_id))
                     .unwrap();
-                let balance_usd = asset.get_balance_usd(state);
+                let balance_usd = asset.get_balance_usd(state, ceiling);
                 balance_usd
             })
             .collect::<Vec<u128>>()
@@ -189,13 +188,13 @@ impl Asset {
         })
     }
 
-    fn get_balance_usd(&self, asset_state: &AssetState) -> u128 {
+    fn get_balance_usd(&self, asset_state: &AssetState, ceiling: bool) -> u128 {
         let balance_usd = calc_usd_amount(
             asset_state.ata_amount,
             asset_state.mint_decimals,
             asset_state.oracle_price,
             asset_state.oracle_price_expo,
-            true,
+            ceiling,
         )
         .unwrap();
 
@@ -230,13 +229,13 @@ impl StrategyRecord {
         })
     }
 
-    fn get_balance_usd(&self, asset_state: &AssetState) -> u128 {
+    fn get_balance_usd(&self, asset_state: &AssetState, ceiling: bool) -> u128 {
         let balance_usd = calc_usd_amount(
             self.balance,
             asset_state.mint_decimals,
             asset_state.oracle_price,
             asset_state.oracle_price_expo,
-            true,
+            ceiling,
         )
         .unwrap();
         balance_usd
