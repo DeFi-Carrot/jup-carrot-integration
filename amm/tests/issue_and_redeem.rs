@@ -7,7 +7,6 @@ use bincode::serialize;
 use jupiter_amm_interface::{Amm, QuoteParams, SwapMode};
 use solana_program_test::ProgramTest;
 use solana_sdk::{
-    compute_budget::ComputeBudgetInstruction,
     instruction::{AccountMeta, Instruction},
     program_pack::Pack,
     pubkey::Pubkey,
@@ -138,8 +137,6 @@ async fn test_issue_and_redeem() {
         user_transfer_authority: payer.pubkey(),
     };
 
-    let compute_ix = ComputeBudgetInstruction::set_compute_unit_limit(1_400_000);
-
     let issue_accounts: Vec<AccountMeta> = carrot_swap_issue.into();
 
     let issue_ix = Instruction {
@@ -149,7 +146,7 @@ async fn test_issue_and_redeem() {
     };
 
     let issue_tx = Transaction::new_signed_with_payer(
-        &[compute_ix.clone(), issue_ix],
+        &[issue_ix],
         Some(&payer.pubkey()),
         &[&payer],
         recent_blockhash,
@@ -207,7 +204,7 @@ async fn test_issue_and_redeem() {
     };
 
     let redeem_tx = Transaction::new_signed_with_payer(
-        &[compute_ix, redeem_ix],
+        &[redeem_ix],
         Some(&payer.pubkey()),
         &[&payer],
         recent_blockhash,
