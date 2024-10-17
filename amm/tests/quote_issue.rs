@@ -8,7 +8,7 @@ use utils::*;
 #[tokio::test]
 async fn test_quote_issue() {
     // init account map from filesystem
-    let account_map = init_account_map();
+    let account_map = load_account_map_from_file();
 
     // parse vault state
     let vault_account = account_map.get(&CRT_VAULT).unwrap();
@@ -33,5 +33,4 @@ async fn test_quote_issue() {
     // Call the quote method
     let quote_result = carrot_amm.quote(&quote_params).unwrap();
     assert_eq!(amount, quote_result.in_amount);
-    println!("{:?}", quote_result);
 }

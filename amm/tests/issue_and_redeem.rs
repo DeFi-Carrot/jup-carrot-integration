@@ -1,17 +1,16 @@
 use amm::{
-    constants::{
-        CARROT_LOG_PROGRAM, CARROT_PROGRAM, CRT_MINT, CRT_VAULT, PYUSD_ORACLE, PYUSD_VAULT_ATA,
-        USDC_MINT, USDC_ORACLE, USDC_VAULT_ATA, USDT_ORACLE, USDT_VAULT_ATA,
-    },
+    constants::{CARROT_LOG_PROGRAM, CARROT_PROGRAM, CRT_MINT, CRT_VAULT, USDC_MINT},
     state::Vault,
-    CarrotAmm,
+    CarrotAmm, CarrotSwap,
 };
 use bincode::serialize;
 use jupiter_amm_interface::{Amm, QuoteParams, SwapMode};
 use solana_program_test::ProgramTest;
 use solana_sdk::{
+    compute_budget::ComputeBudgetInstruction,
     instruction::{AccountMeta, Instruction},
     program_pack::Pack,
+    pubkey::Pubkey,
     rent::Rent,
     signature::{Keypair, Signer},
     system_instruction,
@@ -24,7 +23,7 @@ mod utils;
 use utils::*;
 
 #[tokio::test]
-async fn test_issue() {
+async fn test_issue_and_redeem() {
     let mut program_test = ProgramTest::default();
     program_test.prefer_bpf(true);
 
@@ -33,7 +32,7 @@ async fn test_issue() {
     program_test.add_program("carrot-log", CARROT_LOG_PROGRAM, None);
 
     // init account mapping
-    let account_map = init_account_map();
+    let mut account_map = load_account_map_from_file();
 
     // add all accounts to test harness
     for (address, account) in account_map.iter() {
@@ -55,6 +54,8 @@ async fn test_issue() {
 
     let payer_shares_ata = Keypair::new();
     let payer_usdc_ata = Keypair::new();
+
+    let payer_usdc_mint_to = 1_000_000_000;
 
     let setup_payer_tx = Transaction::new_signed_with_payer(
         &[
@@ -92,7 +93,7 @@ async fn test_issue() {
                 &payer_usdc_ata.pubkey(),
                 &mint_authority.pubkey(),
                 &[&mint_authority.pubkey()],
-                1_000_000_000_000,
+                payer_usdc_mint_to,
             )
             .unwrap(),
         ],
@@ -116,46 +117,39 @@ async fn test_issue() {
     // update account cache
     carrot_amm.update(&account_map).unwrap();
 
-    let amount = 1_000_000_000;
+    let usdc_amount = 1_000_000_000;
 
-    let quote_params = QuoteParams {
+    let issue_quote_params = QuoteParams {
         input_mint: USDC_MINT,
         output_mint: CRT_MINT,
-        amount,
+        amount: usdc_amount,
         swap_mode: SwapMode::ExactIn,
     };
 
-    let quote = carrot_amm.quote(&quote_params).unwrap();
-    assert_eq!(amount, quote.in_amount);
+    let issue_quote = carrot_amm.quote(&issue_quote_params).unwrap();
+    assert_eq!(usdc_amount, issue_quote.in_amount);
 
-    let data = get_ix_data("issue", amount);
+    let issue_data = get_ix_data("issue", usdc_amount);
+
+    let carrot_swap_issue = CarrotSwap {
+        source_mint: issue_quote_params.input_mint,
+        user_source: payer_usdc_ata.pubkey(),
+        user_destination: payer_shares_ata.pubkey(),
+        user_transfer_authority: payer.pubkey(),
+    };
+
+    let compute_ix = ComputeBudgetInstruction::set_compute_unit_limit(1_400_000);
+
+    let issue_accounts: Vec<AccountMeta> = carrot_swap_issue.into();
 
     let issue_ix = Instruction {
         program_id: CARROT_PROGRAM,
-        accounts: vec![
-            AccountMeta::new(CRT_VAULT, false),
-            AccountMeta::new(CRT_MINT, false),
-            AccountMeta::new(payer_shares_ata.pubkey(), false),
-            AccountMeta::new(USDC_MINT, false),
-            AccountMeta::new(USDC_VAULT_ATA, false),
-            AccountMeta::new(payer_usdc_ata.pubkey(), false),
-            AccountMeta::new(payer.pubkey(), true),
-            AccountMeta::new_readonly(solana_sdk::system_program::id(), false),
-            AccountMeta::new_readonly(token_program_id(), false),
-            AccountMeta::new_readonly(token_2022_program_id(), false),
-            AccountMeta::new_readonly(CARROT_LOG_PROGRAM, false),
-            AccountMeta::new_readonly(USDC_ORACLE, false),
-            AccountMeta::new_readonly(USDT_ORACLE, false),
-            AccountMeta::new_readonly(PYUSD_ORACLE, false),
-            AccountMeta::new_readonly(USDC_VAULT_ATA, false),
-            AccountMeta::new_readonly(USDT_VAULT_ATA, false),
-            AccountMeta::new_readonly(PYUSD_VAULT_ATA, false),
-        ],
-        data,
+        accounts: issue_accounts,
+        data: issue_data,
     };
 
     let issue_tx = Transaction::new_signed_with_payer(
-        &[issue_ix],
+        &[compute_ix.clone(), issue_ix],
         Some(&payer.pubkey()),
         &[&payer],
         recent_blockhash,
@@ -173,7 +167,65 @@ async fn test_issue() {
         .unwrap()
         .unwrap();
     let payer_shares_ata_data = Token2022Account::unpack(&payer_shares.data).unwrap();
-    assert_eq!(quote.out_amount, payer_shares_ata_data.amount);
+    assert_eq!(issue_quote.out_amount, payer_shares_ata_data.amount);
+
+    // fetch updated accounts as result of issue tx
+    let account_map_addresses: Vec<Pubkey> = account_map.keys().cloned().collect();
+    account_map =
+        load_account_map_from_bank(&mut banks_client, account_map_addresses.as_slice()).await;
+
+    // update amm with new account data
+    carrot_amm.update(&account_map).unwrap();
+
+    let crt_amount = 1_000_000_000;
+
+    let redeem_quote_params = QuoteParams {
+        input_mint: CRT_MINT,
+        output_mint: USDC_MINT,
+        amount: crt_amount,
+        swap_mode: SwapMode::ExactIn,
+    };
+
+    let redeem_quote = carrot_amm.quote(&redeem_quote_params).unwrap();
+    assert_eq!(crt_amount, redeem_quote.in_amount);
+
+    let redeem_data = get_ix_data("redeem", crt_amount);
+
+    let carrot_swap_redeem = CarrotSwap {
+        source_mint: redeem_quote_params.input_mint,
+        user_source: payer_shares_ata.pubkey(),
+        user_destination: payer_usdc_ata.pubkey(),
+        user_transfer_authority: payer.pubkey(),
+    };
+
+    let redeem_accounts: Vec<AccountMeta> = carrot_swap_redeem.into();
+
+    let redeem_ix = Instruction {
+        program_id: CARROT_PROGRAM,
+        accounts: redeem_accounts,
+        data: redeem_data,
+    };
+
+    let redeem_tx = Transaction::new_signed_with_payer(
+        &[compute_ix, redeem_ix],
+        Some(&payer.pubkey()),
+        &[&payer],
+        recent_blockhash,
+    );
+
+    banks_client
+        .process_transaction_with_metadata(redeem_tx)
+        .await
+        .unwrap();
+
+    // assert usdc received for redemption
+    let payer_usdc = banks_client
+        .get_account(payer_usdc_ata.pubkey())
+        .await
+        .unwrap()
+        .unwrap();
+    let payer_usdc_ata_data = TokenAccount::unpack(&payer_usdc.data).unwrap();
+    assert_eq!(redeem_quote.out_amount, payer_usdc_ata_data.amount);
 }
 
 fn get_function_hash(namespace: &str, name: &str) -> [u8; 8] {

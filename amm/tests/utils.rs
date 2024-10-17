@@ -1,4 +1,5 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
+use solana_program_test::BanksClient;
 use std::collections::HashMap;
 use std::str::FromStr;
 
@@ -10,7 +11,7 @@ use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
-pub fn init_account_map() -> AccountMap {
+pub fn load_account_map_from_file() -> AccountMap {
     let paths = [
         "tests/fixtures/vault.json",
         "tests/fixtures/shares_mint.json",
@@ -26,14 +27,31 @@ pub fn init_account_map() -> AccountMap {
     ];
     let mut map = HashMap::new();
     for path in paths.iter() {
-        let (address, account) = load_account(path);
+        let (address, account) = load_account_from_file(path);
         map.insert(address, account);
     }
 
     map
 }
 
-pub fn load_account(path: &str) -> (Pubkey, Account) {
+pub async fn load_account_map_from_bank(
+    banks_client: &mut BanksClient,
+    accounts: &[Pubkey],
+) -> AccountMap {
+    let mut map = HashMap::new();
+    for addr in accounts {
+        let account = banks_client
+            .get_account(addr.clone())
+            .await
+            .unwrap()
+            .unwrap();
+        map.insert(addr.clone(), account);
+    }
+
+    map
+}
+
+fn load_account_from_file(path: &str) -> (Pubkey, Account) {
     // read json file representing account
     let path = Path::new(path);
     let mut file = File::open(&path).unwrap();
