@@ -11,10 +11,11 @@ Carrot is the easiest way to passively benefit from DeFi on Solana. We've crafte
 ### TODO
 
 - strategy integration
+- clean up code, dont use unwrap, collapse into more functions
 - testing:
   - USDT, PYUSD
   - management, performance fee
 
 #### Questions
 
-- what do I put for fee mint?
+- can i use multiple ixns
