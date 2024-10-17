@@ -3,6 +3,7 @@ use amm::{state::Vault, CarrotAmm};
 use jupiter_amm_interface::{Amm, QuoteParams, SwapMode};
 
 mod utils;
+use rust_decimal::Decimal;
 use utils::*;
 
 #[tokio::test]
@@ -33,5 +34,9 @@ async fn test_quote_redeem() {
     // Call the quote method
     let quote_result = carrot_amm.quote(&quote_params).unwrap();
     assert_eq!(amount, quote_result.in_amount);
+    assert_eq!(103_252_184, quote_result.out_amount);
+    assert_eq!(100_000, quote_result.fee_amount);
+    assert_eq!(Decimal::new(1, 4), quote_result.fee_pct);
+    assert_eq!(CRT_MINT, quote_result.fee_mint);
     println!("{:?}", quote_result);
 }

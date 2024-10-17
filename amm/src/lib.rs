@@ -292,7 +292,7 @@ impl Amm for CarrotAmm {
             in_amount: quote_params.amount,
             out_amount,
             fee_amount,
-            fee_mint: CRT_MINT,
+            fee_mint: quote_params.input_mint,
             ..Quote::default()
         })
     }
