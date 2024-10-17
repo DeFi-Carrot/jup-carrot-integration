@@ -12,10 +12,12 @@ Carrot is the easiest way to passively benefit from DeFi on Solana. We've crafte
 
 - strategy integration
 - clean up code, dont use unwrap, collapse into more functions
+- return error? or 0 if not enough tokens for redemption, like we have no pyusd
 - testing:
-  - USDT, PYUSD
   - management, performance fee
 
 #### Questions
 
 - can i use multiple ixns
+- my program does not init the ATA if they dont have, client side we detect and add that ix if necessary
+- what do I put for Swap type in SwapAndAccountMetas

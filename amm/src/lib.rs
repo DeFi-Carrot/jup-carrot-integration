@@ -62,6 +62,7 @@ impl Clone for CarrotAmm {
 #[derive(Copy, Clone, Debug)]
 pub struct CarrotSwap {
     pub source_mint: Pubkey,
+    pub destination_mint: Pubkey,
     pub user_source: Pubkey,
     pub user_destination: Pubkey,
     pub user_transfer_authority: Pubkey,
@@ -69,22 +70,59 @@ pub struct CarrotSwap {
 
 impl From<CarrotSwap> for Vec<AccountMeta> {
     fn from(accounts: CarrotSwap) -> Self {
-        let (source_account, destination_account) = if accounts.source_mint.eq(&USDC_MINT) {
-            (accounts.user_source, accounts.user_destination)
-        } else {
-            (accounts.user_destination, accounts.user_source)
-        };
+        let (user_shares_ata, user_asset_ata, asset_mint, vault_ata, token_program) =
+            if accounts.source_mint.eq(&CRT_MINT) {
+                // redeem operation
+
+                // determine the vault ata according to the destination mint requested by the user
+                let (vault_ata, token_program) = match accounts.destination_mint {
+                    USDC_MINT => (USDC_VAULT_ATA, TOKEN_PROGRAM),
+                    USDT_MINT => (USDT_VAULT_ATA, TOKEN_PROGRAM),
+                    PYUSD_MINT => (PYUSD_VAULT_ATA, TOKEN_22_PROGRAM),
+                    _ => panic!("unsupported destination mint {}", accounts.destination_mint),
+                };
+
+                // source is expected to be shares since thats the input
+                // destination is expected to be the asset since thats the output
+                (
+                    accounts.user_source,
+                    accounts.user_destination,
+                    accounts.destination_mint,
+                    vault_ata,
+                    token_program,
+                )
+            } else {
+                // issue operation
+
+                // determine the vault ata according to the destination mint requested by the user
+                let (vault_ata, token_program) = match accounts.source_mint {
+                    USDC_MINT => (USDC_VAULT_ATA, TOKEN_PROGRAM),
+                    USDT_MINT => (USDT_VAULT_ATA, TOKEN_PROGRAM),
+                    PYUSD_MINT => (PYUSD_VAULT_ATA, TOKEN_22_PROGRAM),
+                    _ => panic!("unsupported source mint {}", accounts.source_mint),
+                };
+
+                // source is expected to be asset since thats the input
+                // destination is expected to be the shares since thats the output
+                (
+                    accounts.user_destination,
+                    accounts.user_source,
+                    accounts.source_mint,
+                    vault_ata,
+                    token_program,
+                )
+            };
 
         let mut account_metas = vec![
             AccountMeta::new(CRT_VAULT, false),
             AccountMeta::new(CRT_MINT, false),
-            AccountMeta::new(destination_account, false),
-            AccountMeta::new_readonly(USDC_MINT, false),
-            AccountMeta::new(USDC_VAULT_ATA, false),
-            AccountMeta::new(source_account, false),
+            AccountMeta::new(user_shares_ata, false),
+            AccountMeta::new_readonly(asset_mint, false),
+            AccountMeta::new(vault_ata, false),
+            AccountMeta::new(user_asset_ata, false),
             AccountMeta::new(accounts.user_transfer_authority, true),
             AccountMeta::new_readonly(SystemProgramId, false),
-            AccountMeta::new_readonly(TOKEN_PROGRAM, false),
+            AccountMeta::new_readonly(token_program, false),
             AccountMeta::new_readonly(TOKEN_22_PROGRAM, false),
             AccountMeta::new_readonly(CARROT_LOG_PROGRAM, false),
         ];
@@ -299,20 +337,22 @@ impl Amm for CarrotAmm {
 
     fn get_swap_and_account_metas(&self, swap_params: &SwapParams) -> Result<SwapAndAccountMetas> {
         let SwapParams {
-            token_transfer_authority,
-            source_token_account,
-            destination_token_account,
             source_mint,
+            source_token_account,
+            destination_mint,
+            destination_token_account,
+            token_transfer_authority,
             ..
         } = swap_params;
 
         Ok(SwapAndAccountMetas {
             swap: Swap::TokenSwap,
             account_metas: CarrotSwap {
-                user_destination: *destination_token_account,
-                user_source: *source_token_account,
-                user_transfer_authority: *token_transfer_authority,
                 source_mint: *source_mint,
+                destination_mint: *destination_mint,
+                user_source: *source_token_account,
+                user_destination: *destination_token_account,
+                user_transfer_authority: *token_transfer_authority,
             }
             .into(),
         })
