@@ -1,10 +1,7 @@
 use anyhow::{anyhow, Result};
-use std::ops::Add;
-
-//use pyth_solana_receiver_sdk::price_update::PriceUpdateV2;
 use solana_sdk::pubkey::Pubkey;
 
-use crate::{calc_usd_amount, shares_earned};
+use crate::{calc_usd_amount, errors::CarrotAmmError, shares_earned};
 
 //
 // accounts
@@ -81,19 +78,16 @@ impl Vault {
 
     // get total vault balance in usd
     // looks at strategy balances and ATA balances
-    pub fn get_tvl(&self, asset_state: &Vec<AssetState>, ceiling: bool) -> u128 {
+    pub fn get_tvl(&self, asset_state: &Vec<AssetState>, ceiling: bool) -> Result<u128> {
         let total_strategy_balance: u128 = self
             .strategies
             .iter()
             .map(|strat| {
-                let state = asset_state
-                    .iter()
-                    .find(|a| a.asset_id.eq(&strat.asset_id))
-                    .unwrap();
-                let balance_usd = strat.get_balance_usd(state, ceiling);
-                balance_usd
+                let state = get_asset_state_by_id(&asset_state, strat.asset_id)?;
+                let balance_usd = strat.get_balance_usd(state, ceiling)?;
+                Ok(balance_usd)
             })
-            .collect::<Vec<u128>>()
+            .collect::<Result<Vec<u128>>>()?
             .iter()
             .sum();
 
@@ -101,18 +95,17 @@ impl Vault {
             .assets
             .iter()
             .map(|asset| {
-                let state = asset_state
-                    .iter()
-                    .find(|a| a.asset_id.eq(&asset.asset_id))
-                    .unwrap();
-                let balance_usd = asset.get_balance_usd(state, ceiling);
-                balance_usd
+                let state = get_asset_state_by_id(&asset_state, asset.asset_id)?;
+                let balance_usd = asset.get_balance_usd(state, ceiling)?;
+                Ok(balance_usd)
             })
-            .collect::<Vec<u128>>()
+            .collect::<Result<Vec<u128>>>()?
             .iter()
             .sum();
 
-        total_strategy_balance.add(total_reserve_balance)
+        total_strategy_balance
+            .checked_add(total_reserve_balance)
+            .ok_or(CarrotAmmError::InvalidTokenCalculation.into())
     }
 
     pub fn calculate_accumulated_performance_fee(
@@ -125,10 +118,7 @@ impl Vault {
         let mut performance_fee_accumulated: u64 = 0;
         for strategy in self.strategies.iter() {
             // find strategy asset
-            let asset = asset_state
-                .iter()
-                .find(|a| a.asset_id.eq(&strategy.asset_id))
-                .unwrap();
+            let asset = get_asset_state_by_id(asset_state, strategy.asset_id)?;
 
             // calculate performance fee for each strategy
             let strategy_performance_fee = self.fee.calculate_performance_fee(
@@ -139,15 +129,22 @@ impl Vault {
                 shares_supply,
                 shares_decimals,
                 vault_tvl,
-            );
-            performance_fee_accumulated += strategy_performance_fee;
+            )?;
+            performance_fee_accumulated = performance_fee_accumulated
+                .checked_add(strategy_performance_fee)
+                .ok_or(CarrotAmmError::InvalidFeeCalculation)?;
         }
 
         Ok(performance_fee_accumulated)
     }
 
-    pub fn get_asset_by_mint(&self, asset_mint: Pubkey) -> &Asset {
-        self.assets.iter().find(|a| a.mint.eq(&asset_mint)).unwrap()
+    pub fn get_asset_by_mint(&self, asset_mint: Pubkey) -> Result<&Asset> {
+        let asset = self
+            .assets
+            .iter()
+            .find(|a| a.mint.eq(&asset_mint))
+            .ok_or(CarrotAmmError::AssetNotFound)?;
+        Ok(asset)
     }
 }
 
@@ -188,17 +185,15 @@ impl Asset {
         })
     }
 
-    fn get_balance_usd(&self, asset_state: &AssetState, ceiling: bool) -> u128 {
-        let balance_usd = calc_usd_amount(
+    fn get_balance_usd(&self, asset_state: &AssetState, ceiling: bool) -> Result<u128> {
+        calc_usd_amount(
             asset_state.ata_amount,
             asset_state.mint_decimals,
             asset_state.oracle_price,
             asset_state.oracle_price_expo,
             ceiling,
         )
-        .unwrap();
-
-        balance_usd
+        .ok_or(CarrotAmmError::InvalidTokenCalculation.into())
     }
 }
 
@@ -229,16 +224,15 @@ impl StrategyRecord {
         })
     }
 
-    fn get_balance_usd(&self, asset_state: &AssetState, ceiling: bool) -> u128 {
-        let balance_usd = calc_usd_amount(
+    fn get_balance_usd(&self, asset_state: &AssetState, ceiling: bool) -> Result<u128> {
+        calc_usd_amount(
             self.balance,
             asset_state.mint_decimals,
             asset_state.oracle_price,
             asset_state.oracle_price_expo,
             ceiling,
         )
-        .unwrap();
-        balance_usd
+        .ok_or(CarrotAmmError::InvalidTokenCalculation.into())
     }
 }
 
@@ -309,37 +303,31 @@ impl Fee {
         tvl: u128,
         shares_supply: u64,
         shares_decimals: u8,
-    ) -> u64 {
+    ) -> Result<u64> {
         // TODO: can i do this?
         let current_time = chrono::Utc::now().timestamp();
 
         // require a delta of over 60 seconds
         let time_delta = current_time - self.management_fee_last_update;
         if time_delta <= 60 {
-            return 0;
+            return Ok(0);
         }
 
         // Calculate elapsed time in seconds
         let elapsed_seconds = time_delta as u128;
 
         // Calculate fee in USD cents using integer arithmetic
-        let fee_usd_cents = (self.calc_management_fee(tvl) as u128 * elapsed_seconds)
+        let fee_usd_cents = (self.calc_management_fee(tvl)? as u128 * elapsed_seconds)
             / Fee::SECONDS_IN_YEAR as u128;
 
-        //// update timestamp
-        //self.management_fee_last_update = current_time;
-
         if fee_usd_cents == 0 {
-            return 0;
+            return Ok(0);
         }
 
         // convert usd cents to shares ui based on NAV
         let shares_amount = shares_earned(fee_usd_cents, shares_supply, shares_decimals, tvl, true);
 
-        //// increment accumulated store
-        //self.management_fee_accumulated += shares_amount;
-
-        shares_amount
+        Ok(shares_amount)
     }
 
     // returns the shares amount of the performance fee that should be minted to the fee account
@@ -352,10 +340,10 @@ impl Fee {
         shares_supply: u64,
         shares_decimals: u8,
         vault_tvl: u128,
-    ) -> u64 {
+    ) -> Result<u64> {
         // if we lost/didnt make any money dont charge a fee
         if net_earnings.le(&0) {
-            return 0;
+            return Ok(0);
         };
 
         // calculate value of earnings in usd
@@ -366,7 +354,7 @@ impl Fee {
             asset_price_expo,
             true,
         )
-        .unwrap();
+        .ok_or(CarrotAmmError::InvalidTokenCalculation)?;
 
         // calculate performance fee in usd
         let fee_amount_usd = self.calc_performance_fee(net_earnings_usd);
@@ -379,7 +367,7 @@ impl Fee {
             true,
         );
 
-        fee_amount_shares
+        Ok(fee_amount_shares)
     }
 
     // returns (remaining_amount after fee, fee_amount)
@@ -407,10 +395,11 @@ impl Fee {
             + self.redemption_fee_accumulated
     }
 
-    fn calc_management_fee(&self, tvl: u128) -> u128 {
-        ((tvl * self.management_fee_bps as u128 + 9_999) / 10_000) // round up
+    fn calc_management_fee(&self, tvl: u128) -> Result<u128> {
+        let mgmt_fee = ((tvl * self.management_fee_bps as u128 + 9_999) / 10_000)
             .try_into()
-            .unwrap()
+            .map_err(|_| CarrotAmmError::InvalidFeeCalculation)?;
+        Ok(mgmt_fee)
     }
 
     fn calc_performance_fee(&self, net_earnings_usd: u128) -> u128 {
@@ -489,6 +478,14 @@ pub struct AssetState {
     pub ata_amount: u64,
     pub oracle_price: i64,
     pub oracle_price_expo: i32,
+}
+
+pub fn get_asset_state_by_id(asset_state: &[AssetState], asset_id: u16) -> Result<&AssetState> {
+    let asset = asset_state
+        .iter()
+        .find(|a| a.asset_id.eq(&asset_id))
+        .ok_or(CarrotAmmError::AssetNotFound)?;
+    Ok(asset)
 }
 
 #[derive(Clone, Copy)]

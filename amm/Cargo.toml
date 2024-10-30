@@ -11,6 +11,7 @@ rust_decimal = "1.36.0"
 solana-sdk = "2.0.10"
 spl-token = { version = "6.0.0", features = ["no-entrypoint"] }
 spl-token-2022 = { version = "5.0.2", features = ["no-entrypoint"] }
+thiserror = "1.0.65"
 
 [dev-dependencies]
 tokio = "^1"
