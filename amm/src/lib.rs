@@ -192,7 +192,6 @@ impl Amm for CarrotAmm {
             accounts.extend(vec![a.ata, a.oracle]);
         }
 
-        // TODO: add strategy accounts
         accounts
     }
 
@@ -272,7 +271,6 @@ impl Amm for CarrotAmm {
             .adjust_shares_by_fees(shares_state.supply, accumulated_performance_fee);
 
         // calculate management fee before deposit
-        // TODO: figure out how to test this
         let fee_amount = self.vault_state.fee.calculate_management_fee(
             vault_tvl,
             adjusted_shares_supply_before_mgmt_fee,
@@ -343,7 +341,6 @@ impl Amm for CarrotAmm {
                 false,
             );
 
-            // TODO: 0 should probably be a variable when i write tests for manage/perf fees even though they're currently disabled
             (shares_owed, Decimal::ZERO, 0)
         };
 
