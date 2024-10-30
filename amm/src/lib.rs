@@ -18,7 +18,9 @@ use spl_token_2022::{
 pub mod constants;
 use constants::*;
 
+mod errors;
 mod math;
+use errors::CarrotAmmError;
 use math::*;
 use state::{AssetState, PriceUpdateV2, SharesState, Vault};
 
@@ -44,6 +46,21 @@ impl CarrotAmm {
             shares_state: None,
         }
     }
+
+    pub fn get_asset_by_mint(&self, asset_mint: &Pubkey) -> Result<&AssetState> {
+        let asset_state = self
+            .asset_state
+            .iter()
+            .find(|asset_state| asset_state.mint.eq(asset_mint))
+            .ok_or(CarrotAmmError::AssetNotFound)?;
+
+        Ok(asset_state)
+    }
+
+    pub fn get_asset_liquidity(&self, asset_mint: &Pubkey) -> Result<u64> {
+        let asset_state = self.get_asset_by_mint(asset_mint)?;
+        Ok(asset_state.ata_amount)
+    }
 }
 
 impl Clone for CarrotAmm {
@@ -68,8 +85,10 @@ pub struct CarrotSwap {
     pub user_transfer_authority: Pubkey,
 }
 
-impl From<CarrotSwap> for Vec<AccountMeta> {
-    fn from(accounts: CarrotSwap) -> Self {
+impl TryFrom<CarrotSwap> for Vec<AccountMeta> {
+    type Error = anyhow::Error;
+
+    fn try_from(accounts: CarrotSwap) -> Result<Self> {
         let (user_shares_ata, user_asset_ata, asset_mint, vault_ata, token_program) =
             if accounts.source_mint.eq(&CRT_MINT) {
                 // redeem operation
@@ -79,7 +98,7 @@ impl From<CarrotSwap> for Vec<AccountMeta> {
                     USDC_MINT => (USDC_VAULT_ATA, TOKEN_PROGRAM),
                     USDT_MINT => (USDT_VAULT_ATA, TOKEN_PROGRAM),
                     PYUSD_MINT => (PYUSD_VAULT_ATA, TOKEN_22_PROGRAM),
-                    _ => panic!("unsupported destination mint {}", accounts.destination_mint),
+                    _ => return Err(CarrotAmmError::InvalidDestinationMint.into()),
                 };
 
                 // source is expected to be shares since thats the input
@@ -99,7 +118,7 @@ impl From<CarrotSwap> for Vec<AccountMeta> {
                     USDC_MINT => (USDC_VAULT_ATA, TOKEN_PROGRAM),
                     USDT_MINT => (USDT_VAULT_ATA, TOKEN_PROGRAM),
                     PYUSD_MINT => (PYUSD_VAULT_ATA, TOKEN_22_PROGRAM),
-                    _ => panic!("unsupported source mint {}", accounts.source_mint),
+                    _ => return Err(CarrotAmmError::InvalidSourceMint.into()),
                 };
 
                 // source is expected to be asset since thats the input
@@ -137,7 +156,7 @@ impl From<CarrotSwap> for Vec<AccountMeta> {
             AccountMeta::new_readonly(PYUSD_VAULT_ATA, false),
         ]);
 
-        account_metas
+        Ok(account_metas)
     }
 }
 
@@ -185,7 +204,7 @@ impl Amm for CarrotAmm {
 
         // update shares state
         let mint_data = try_get_account_data(account_map, &self.vault_state.shares)?;
-        let mint = StateWithExtensionsOwned::<Mint22>::unpack(mint_data.to_vec()).unwrap();
+        let mint = StateWithExtensionsOwned::<Mint22>::unpack(mint_data.to_vec())?;
         self.shares_state = Some(SharesState {
             mint: self.vault_state.shares,
             supply: mint.base.supply,
@@ -231,9 +250,11 @@ impl Amm for CarrotAmm {
     fn quote(&self, quote_params: &QuoteParams) -> Result<Quote> {
         let is_redeem = quote_params.input_mint.eq(&self.vault_state.shares);
         let round_up = !is_redeem;
-        let vault_tvl = self.vault_state.get_tvl(&self.asset_state, round_up);
+        let vault_tvl = self.vault_state.get_tvl(&self.asset_state, round_up)?;
 
-        let shares_state = self.shares_state.unwrap();
+        let shares_state = self
+            .shares_state
+            .ok_or(CarrotAmmError::SharesStateNotInitialized)?;
 
         // calculate unminted performance fees, used to adjust the shares supply
         let accumulated_performance_fee = self.vault_state.calculate_accumulated_performance_fee(
@@ -256,12 +277,15 @@ impl Amm for CarrotAmm {
             vault_tvl,
             adjusted_shares_supply_before_mgmt_fee,
             shares_state.decimals,
-        );
+        )?;
 
         // adjust shares supply by unminted fees accrued
         // this is now the true adjusted shares supply because it takes into account the latest fee data
         let adjusted_shares_supply = self.vault_state.fee.adjust_shares_by_fees(
-            shares_state.supply + fee_amount,
+            shares_state
+                .supply
+                .checked_add(fee_amount)
+                .ok_or(CarrotAmmError::InvalidFeeCalculation)?,
             accumulated_performance_fee,
         );
 
@@ -275,21 +299,22 @@ impl Amm for CarrotAmm {
             let redeem_amount_usd =
                 usd_earned(fee_adjusted_input_amount, adjusted_shares_supply, vault_tvl);
 
-            // TODO make this a method
-            let asset_state = self
-                .asset_state
-                .iter()
-                .find(|a| a.mint.eq(&quote_params.output_mint))
-                .unwrap();
+            let asset = self.get_asset_by_mint(&quote_params.output_mint)?;
 
             let asset_amount = calc_token_amount(
                 redeem_amount_usd,
-                asset_state.mint_decimals,
-                asset_state.oracle_price,
-                asset_state.oracle_price_expo,
+                asset.mint_decimals,
+                asset.oracle_price,
+                asset.oracle_price_expo,
                 false,
             )
-            .unwrap();
+            .ok_or(CarrotAmmError::InvalidTokenCalculation)?;
+
+            // check that we have sufficient liquidity for redemption
+            let asset_liquidity = self.get_asset_liquidity(&quote_params.output_mint)?;
+            if asset_amount.gt(&asset_liquidity) {
+                return Err(CarrotAmmError::InsufficientLiquidity.into());
+            }
 
             (
                 asset_amount,
@@ -298,11 +323,8 @@ impl Amm for CarrotAmm {
             )
         } else {
             // if input is not shares, its an issue operation
-            let asset = self
-                .asset_state
-                .iter()
-                .find(|a| a.mint.eq(&quote_params.input_mint))
-                .unwrap();
+            let asset = self.get_asset_by_mint(&quote_params.input_mint)?;
+
             let deposit_usd = calc_usd_amount(
                 quote_params.amount,
                 asset.mint_decimals,
@@ -310,7 +332,7 @@ impl Amm for CarrotAmm {
                 asset.oracle_price_expo,
                 false,
             )
-            .unwrap();
+            .ok_or(CarrotAmmError::InvalidTokenCalculation)?;
 
             // determine shares owed to depositor
             let shares_owed = shares_earned(
@@ -354,7 +376,7 @@ impl Amm for CarrotAmm {
                 user_destination: *destination_token_account,
                 user_transfer_authority: *token_transfer_authority,
             }
-            .into(),
+            .try_into()?,
         })
     }
 

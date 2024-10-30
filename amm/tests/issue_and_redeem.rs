@@ -189,7 +189,7 @@ async fn test_issue_and_redeem() {
             user_transfer_authority: payer.pubkey(),
         };
 
-        let issue_accounts: Vec<AccountMeta> = carrot_swap_issue.into();
+        let issue_accounts: Vec<AccountMeta> = carrot_swap_issue.try_into().unwrap();
 
         let issue_ix = Instruction {
             program_id: CARROT_PROGRAM,
@@ -258,7 +258,7 @@ async fn test_issue_and_redeem() {
             user_transfer_authority: payer.pubkey(),
         };
 
-        let redeem_accounts: Vec<AccountMeta> = carrot_swap_redeem.into();
+        let redeem_accounts: Vec<AccountMeta> = carrot_swap_redeem.try_into().unwrap();
 
         let redeem_ix = Instruction {
             program_id: CARROT_PROGRAM,
