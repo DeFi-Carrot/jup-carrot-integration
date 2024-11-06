@@ -89,57 +89,62 @@ impl TryFrom<CarrotSwap> for Vec<AccountMeta> {
     type Error = anyhow::Error;
 
     fn try_from(accounts: CarrotSwap) -> Result<Self> {
-        let (user_shares_ata, user_asset_ata, asset_mint, vault_ata, token_program) =
-            if accounts.source_mint.eq(&CRT_MINT) {
-                // redeem operation
+        let (
+            user_shares_token_account,
+            user_asset_token_account,
+            asset_mint,
+            vault_ata,
+            token_program,
+        ) = if accounts.source_mint.eq(&CRT_MINT) {
+            // redeem operation
 
-                // determine the vault ata according to the destination mint requested by the user
-                let (vault_ata, token_program) = match accounts.destination_mint {
-                    USDC_MINT => (USDC_VAULT_ATA, TOKEN_PROGRAM),
-                    USDT_MINT => (USDT_VAULT_ATA, TOKEN_PROGRAM),
-                    PYUSD_MINT => (PYUSD_VAULT_ATA, TOKEN_22_PROGRAM),
-                    _ => return Err(CarrotAmmError::InvalidDestinationMint.into()),
-                };
-
-                // source is expected to be shares since thats the input
-                // destination is expected to be the asset since thats the output
-                (
-                    accounts.user_source,
-                    accounts.user_destination,
-                    accounts.destination_mint,
-                    vault_ata,
-                    token_program,
-                )
-            } else {
-                // issue operation
-
-                // determine the vault ata according to the destination mint requested by the user
-                let (vault_ata, token_program) = match accounts.source_mint {
-                    USDC_MINT => (USDC_VAULT_ATA, TOKEN_PROGRAM),
-                    USDT_MINT => (USDT_VAULT_ATA, TOKEN_PROGRAM),
-                    PYUSD_MINT => (PYUSD_VAULT_ATA, TOKEN_22_PROGRAM),
-                    _ => return Err(CarrotAmmError::InvalidSourceMint.into()),
-                };
-
-                // source is expected to be asset since thats the input
-                // destination is expected to be the shares since thats the output
-                (
-                    accounts.user_destination,
-                    accounts.user_source,
-                    accounts.source_mint,
-                    vault_ata,
-                    token_program,
-                )
+            // determine the vault ata according to the destination mint requested by the user
+            let (vault_ata, token_program) = match accounts.destination_mint {
+                USDC_MINT => (USDC_VAULT_ATA, TOKEN_PROGRAM),
+                USDT_MINT => (USDT_VAULT_ATA, TOKEN_PROGRAM),
+                PYUSD_MINT => (PYUSD_VAULT_ATA, TOKEN_22_PROGRAM),
+                _ => return Err(CarrotAmmError::InvalidDestinationMint.into()),
             };
+
+            // source is expected to be shares since thats the input
+            // destination is expected to be the asset since thats the output
+            (
+                accounts.user_source,
+                accounts.user_destination,
+                accounts.destination_mint,
+                vault_ata,
+                token_program,
+            )
+        } else {
+            // issue operation
+
+            // determine the vault ata according to the destination mint requested by the user
+            let (vault_ata, token_program) = match accounts.source_mint {
+                USDC_MINT => (USDC_VAULT_ATA, TOKEN_PROGRAM),
+                USDT_MINT => (USDT_VAULT_ATA, TOKEN_PROGRAM),
+                PYUSD_MINT => (PYUSD_VAULT_ATA, TOKEN_22_PROGRAM),
+                _ => return Err(CarrotAmmError::InvalidSourceMint.into()),
+            };
+
+            // source is expected to be asset since thats the input
+            // destination is expected to be the shares since thats the output
+            (
+                accounts.user_destination,
+                accounts.user_source,
+                accounts.source_mint,
+                vault_ata,
+                token_program,
+            )
+        };
 
         let mut account_metas = vec![
             AccountMeta::new(CRT_VAULT, false),
             AccountMeta::new(CRT_MINT, false),
-            AccountMeta::new(user_shares_ata, false),
+            AccountMeta::new(user_shares_token_account, false),
             AccountMeta::new_readonly(asset_mint, false),
             AccountMeta::new(vault_ata, false),
-            AccountMeta::new(user_asset_ata, false),
-            AccountMeta::new(accounts.user_transfer_authority, true),
+            AccountMeta::new(user_asset_token_account, false),
+            AccountMeta::new_readonly(accounts.user_transfer_authority, true),
             AccountMeta::new_readonly(SystemProgramId, false),
             AccountMeta::new_readonly(token_program, false),
             AccountMeta::new_readonly(TOKEN_22_PROGRAM, false),
@@ -268,7 +273,7 @@ impl Amm for CarrotAmm {
         let adjusted_shares_supply_before_mgmt_fee = self
             .vault_state
             .fee
-            .adjust_shares_by_fees(shares_state.supply, accumulated_performance_fee);
+            .adjust_shares_by_fees(shares_state.supply, accumulated_performance_fee)?;
 
         // calculate management fee before deposit
         let fee_amount = self.vault_state.fee.calculate_management_fee(
@@ -285,17 +290,18 @@ impl Amm for CarrotAmm {
                 .checked_add(fee_amount)
                 .ok_or(CarrotAmmError::InvalidFeeCalculation)?,
             accumulated_performance_fee,
-        );
+        )?;
 
         let (out_amount, fee_pct, fee_amount) = if is_redeem {
             // calculate redemption fee
             let (fee_adjusted_input_amount, redemption_fee_amount) = self
                 .vault_state
                 .fee
-                .calculate_redemption_fee(quote_params.amount);
+                .calculate_redemption_fee(quote_params.amount)?;
 
             let redeem_amount_usd =
-                usd_earned(fee_adjusted_input_amount, adjusted_shares_supply, vault_tvl);
+                usd_earned(fee_adjusted_input_amount, adjusted_shares_supply, vault_tvl)
+                    .ok_or(CarrotAmmError::InvalidTokenCalculation)?;
 
             let asset = self.get_asset_by_mint(&quote_params.output_mint)?;
 
@@ -339,7 +345,8 @@ impl Amm for CarrotAmm {
                 shares_state.decimals,
                 vault_tvl,
                 false,
-            );
+            )
+            .ok_or(CarrotAmmError::InvalidTokenCalculation)?;
 
             (shares_owed, Decimal::ZERO, 0)
         };
