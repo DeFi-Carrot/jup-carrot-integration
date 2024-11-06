@@ -481,6 +481,13 @@ pub enum StrategyType {
         spot_market_vault: Pubkey,
         market_index: u16,
     },
+    Chest {
+        chest: Pubkey,
+        coin: Pubkey,
+        drift_vault: Pubkey,
+        coin_token_account: Pubkey,
+        spot_market_index: u16,
+    },
 }
 
 #[derive(Clone, Copy)]
