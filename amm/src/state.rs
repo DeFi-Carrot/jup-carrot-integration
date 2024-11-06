@@ -317,15 +317,19 @@ impl Fee {
         let elapsed_seconds = time_delta as u128;
 
         // Calculate fee in USD cents using integer arithmetic
-        let fee_usd_cents = (self.calc_management_fee(tvl)? as u128 * elapsed_seconds)
-            / Fee::SECONDS_IN_YEAR as u128;
+        let fee_usd_cents = self
+            .calc_management_fee(tvl)?
+            .checked_mul(elapsed_seconds)
+            .and_then(|prod| prod.checked_div(Fee::SECONDS_IN_YEAR as u128))
+            .ok_or(CarrotAmmError::InvalidFeeCalculation)?;
 
         if fee_usd_cents == 0 {
             return Ok(0);
         }
 
         // convert usd cents to shares ui based on NAV
-        let shares_amount = shares_earned(fee_usd_cents, shares_supply, shares_decimals, tvl, true);
+        let shares_amount = shares_earned(fee_usd_cents, shares_supply, shares_decimals, tvl, true)
+            .ok_or(CarrotAmmError::InvalidTokenCalculation)?;
 
         Ok(shares_amount)
     }
@@ -357,29 +361,25 @@ impl Fee {
         .ok_or(CarrotAmmError::InvalidTokenCalculation)?;
 
         // calculate performance fee in usd
-        let fee_amount_usd = self.calc_performance_fee(net_earnings_usd);
+        let fee_amount_usd = self.calc_performance_fee(net_earnings_usd)?;
 
-        let fee_amount_shares = shares_earned(
+        shares_earned(
             fee_amount_usd,
             shares_supply,
             shares_decimals,
             vault_tvl,
             true,
-        );
-
-        Ok(fee_amount_shares)
+        )
+        .ok_or(CarrotAmmError::InvalidTokenCalculation.into())
     }
 
     // returns (remaining_amount after fee, fee_amount)
-    pub fn calculate_redemption_fee(&self, redemption_amount: u64) -> (u64, u64) {
+    pub fn calculate_redemption_fee(&self, redemption_amount: u64) -> Result<(u64, u64)> {
         if self.redemption_fee_bps == 0 {
-            return (redemption_amount, 0);
+            return Ok((redemption_amount, 0));
         }
 
-        let (remaining_amount, fee_amount) = self.calc_redemption_fee(redemption_amount);
-        //self.redemption_fee_accumulated += fee_amount;
-
-        return (remaining_amount, fee_amount);
+        self.calc_redemption_fee(redemption_amount)
     }
 
     // inflates the shares_supply by the amount of unrealized fees accrued by the protocol
@@ -388,29 +388,42 @@ impl Fee {
         &self,
         shares_supply: u64,
         total_performance_fees_accumulated: u64,
-    ) -> u64 {
+    ) -> Result<u64> {
         shares_supply
-            + total_performance_fees_accumulated
-            + self.management_fee_accumulated
-            + self.redemption_fee_accumulated
+            .checked_add(total_performance_fees_accumulated)
+            .and_then(|sum| sum.checked_add(self.management_fee_accumulated))
+            .and_then(|sum| sum.checked_add(self.redemption_fee_accumulated))
+            .ok_or(CarrotAmmError::InvalidTokenCalculation.into())
     }
 
     fn calc_management_fee(&self, tvl: u128) -> Result<u128> {
-        let mgmt_fee = ((tvl * self.management_fee_bps as u128 + 9_999) / 10_000)
-            .try_into()
-            .map_err(|_| CarrotAmmError::InvalidFeeCalculation)?;
-        Ok(mgmt_fee)
+        tvl.checked_mul(self.management_fee_bps as u128)
+            .and_then(|prod| prod.checked_add(9_999))
+            .and_then(|sum| sum.checked_div(10_000))
+            .ok_or(CarrotAmmError::InvalidFeeCalculation.into())
     }
 
-    fn calc_performance_fee(&self, net_earnings_usd: u128) -> u128 {
-        (net_earnings_usd * self.performance_fee_bps as u128 + 9_999) / 10_000 // round up
+    fn calc_performance_fee(&self, net_earnings_usd: u128) -> Result<u128> {
+        net_earnings_usd
+            .checked_mul(self.performance_fee_bps as u128)
+            .and_then(|prod| prod.checked_add(9_999))
+            .and_then(|sum| sum.checked_div(10_000))
+            .ok_or(CarrotAmmError::InvalidFeeCalculation.into())
     }
 
     // return (remaining redemption amount after fee, fee amount taken)
-    fn calc_redemption_fee(&self, redemption_amount: u64) -> (u64, u64) {
-        let fee_amount = (redemption_amount * self.redemption_fee_bps as u64 + 9_999) / 10_000; // round up
-        let remaining_amount = redemption_amount - fee_amount;
-        (remaining_amount, fee_amount)
+    fn calc_redemption_fee(&self, redemption_amount: u64) -> Result<(u64, u64)> {
+        let fee_amount = redemption_amount
+            .checked_mul(self.redemption_fee_bps as u64)
+            .and_then(|prod| prod.checked_add(9_999))
+            .and_then(|sum| sum.checked_div(10_000))
+            .ok_or(CarrotAmmError::InvalidTokenCalculation)?;
+
+        let remaining_amount = redemption_amount
+            .checked_sub(fee_amount)
+            .ok_or(CarrotAmmError::InvalidTokenCalculation)?;
+
+        Ok((remaining_amount, fee_amount))
     }
 }
 

@@ -5,36 +5,41 @@ pub fn shares_earned(
     shares_decimals: u8,
     vault_tvl: u128,
     round_up: bool,
-) -> u64 {
+) -> Option<u64> {
     if vault_tvl.le(&0) || shares_supply.le(&0) {
         // if vault_tvl or shares_supply is 0 or less, just mint 100 shares
         ui_to_amount(100.0, shares_decimals)
     } else {
         // Calculate shares
         let shares = if round_up {
-            (usd_value * shares_supply as u128 + vault_tvl - 1) / vault_tvl
+            let prod = usd_value.checked_mul(shares_supply as u128)?;
+            let sum = prod.checked_add(vault_tvl - 1)?;
+            sum.checked_div(vault_tvl)?
         } else {
-            usd_value * shares_supply as u128 / vault_tvl
+            let prod = usd_value.checked_mul(shares_supply as u128)?;
+            prod.checked_div(vault_tvl)?
         };
 
         // Check if the result fits within u64
         if shares > u64::MAX as u128 {
-            u64::MAX // Handle overflow case, e.g., by returning the maximum u64 value
+            Some(u64::MAX) // Handle overflow case, e.g., by returning the maximum u64 value
         } else {
-            shares as u64
+            Some(shares as u64)
         }
     }
 }
 
-pub fn usd_earned(shares_to_redeem: u64, shares_supply: u64, vault_tvl: u128) -> u128 {
+pub fn usd_earned(shares_to_redeem: u64, shares_supply: u64, vault_tvl: u128) -> Option<u128> {
     if vault_tvl.le(&0) || shares_supply.le(&0) {
         // if vault_tvl or shares_supply is 0 or less, return 0 USD
-        0
+        Some(0)
     } else {
         // rounds down
-        let usd_earned = shares_to_redeem as u128 * vault_tvl / shares_supply as u128;
+        let usd_earned: u128 = (shares_to_redeem as u128)
+            .checked_mul(vault_tvl)?
+            .checked_div(shares_supply as u128)?;
 
-        usd_earned
+        Some(usd_earned)
     }
 }
 
@@ -60,7 +65,7 @@ pub fn calc_usd_amount(
     let numerator = scaled_token_amount.checked_mul(price_feed_price)?;
 
     let result = {
-        let divisor = 10_u128.pow((-price_feed_expo) as u32);
+        let divisor = 10_u128.checked_pow((-price_feed_expo) as u32)?;
 
         if ceiling {
             // Adjust for ceiling by adding divisor - 1 before division
@@ -119,6 +124,11 @@ pub fn calc_token_amount(
 
 const PRECISION: u8 = 9;
 
-fn ui_to_amount(ui: f64, decimal: u8) -> u64 {
-    (ui * 10f64.powi(decimal as i32)) as u64
+fn ui_to_amount(ui: f64, decimal: u8) -> Option<u64> {
+    // Convert the floating-point to an integer without losing precision
+    let multiplier = 10u64.checked_pow(decimal as u32)?;
+    let ui_int = (ui * multiplier as f64).round() as u64;
+
+    // Check for overflow during conversion
+    ui_int.checked_mul(multiplier)
 }

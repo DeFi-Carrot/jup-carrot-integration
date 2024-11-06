@@ -273,7 +273,7 @@ impl Amm for CarrotAmm {
         let adjusted_shares_supply_before_mgmt_fee = self
             .vault_state
             .fee
-            .adjust_shares_by_fees(shares_state.supply, accumulated_performance_fee);
+            .adjust_shares_by_fees(shares_state.supply, accumulated_performance_fee)?;
 
         // calculate management fee before deposit
         let fee_amount = self.vault_state.fee.calculate_management_fee(
@@ -290,17 +290,18 @@ impl Amm for CarrotAmm {
                 .checked_add(fee_amount)
                 .ok_or(CarrotAmmError::InvalidFeeCalculation)?,
             accumulated_performance_fee,
-        );
+        )?;
 
         let (out_amount, fee_pct, fee_amount) = if is_redeem {
             // calculate redemption fee
             let (fee_adjusted_input_amount, redemption_fee_amount) = self
                 .vault_state
                 .fee
-                .calculate_redemption_fee(quote_params.amount);
+                .calculate_redemption_fee(quote_params.amount)?;
 
             let redeem_amount_usd =
-                usd_earned(fee_adjusted_input_amount, adjusted_shares_supply, vault_tvl);
+                usd_earned(fee_adjusted_input_amount, adjusted_shares_supply, vault_tvl)
+                    .ok_or(CarrotAmmError::InvalidTokenCalculation)?;
 
             let asset = self.get_asset_by_mint(&quote_params.output_mint)?;
 
@@ -344,7 +345,8 @@ impl Amm for CarrotAmm {
                 shares_state.decimals,
                 vault_tvl,
                 false,
-            );
+            )
+            .ok_or(CarrotAmmError::InvalidTokenCalculation)?;
 
             (shares_owed, Decimal::ZERO, 0)
         };
