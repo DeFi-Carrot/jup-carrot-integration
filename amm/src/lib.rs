@@ -144,7 +144,7 @@ impl TryFrom<CarrotSwap> for Vec<AccountMeta> {
             AccountMeta::new_readonly(asset_mint, false),
             AccountMeta::new(vault_ata, false),
             AccountMeta::new(user_asset_token_account, false),
-            AccountMeta::new(accounts.user_transfer_authority, true),
+            AccountMeta::new_readonly(accounts.user_transfer_authority, true),
             AccountMeta::new_readonly(SystemProgramId, false),
             AccountMeta::new_readonly(token_program, false),
             AccountMeta::new_readonly(TOKEN_22_PROGRAM, false),
