@@ -304,7 +304,6 @@ impl Fee {
         shares_supply: u64,
         shares_decimals: u8,
     ) -> Result<u64> {
-        // TODO: can i do this?
         let current_time = chrono::Utc::now().timestamp();
 
         // require a delta of over 60 seconds
@@ -594,7 +593,22 @@ impl PriceUpdateV2 {
     }
 
     // Updated get_price_usd_from_pyth_oracle function
-    pub fn get_price_usd_from_pyth_oracle(&self, rounding_mode: RoundingMode) -> (i64, i32) {
+    pub fn get_price_usd_from_pyth_oracle(
+        &self,
+        oracle_max_age: u64,
+        rounding_mode: RoundingMode,
+    ) -> Result<(i64, i32)> {
+        // get current time in seconds
+        let current_time = chrono::Utc::now().timestamp();
+
+        // determine how old the price is in seconds
+        let age = current_time.saturating_sub(self.price_message.publish_time) as u64;
+
+        // error if price is too old
+        if age > oracle_max_age {
+            return Err(CarrotAmmError::OraclePriceStale.into());
+        }
+
         // Adjust the price by the confidence value based on rounding mode
         let adjusted_price = match rounding_mode {
             RoundingMode::RoundUp => self
@@ -608,7 +622,7 @@ impl PriceUpdateV2 {
             RoundingMode::Avg => self.price_message.ema_price,
         };
 
-        (adjusted_price, self.price_message.exponent)
+        Ok((adjusted_price, self.price_message.exponent))
     }
 }
 
@@ -624,8 +638,8 @@ pub struct PriceFeedMessage {
     pub price: i64,
     pub conf: u64,
     pub exponent: i32,
-    pub publish_time: i64,
-    pub prev_publish_time: i64,
+    pub publish_time: i64,      // in seconds
+    pub prev_publish_time: i64, // in seconds
     pub ema_price: i64,
     pub ema_conf: u64,
 }
@@ -638,3 +652,7 @@ pub enum RoundingMode {
     RoundDown,
     Avg,
 }
+
+// oracle price max age allowed in seconds
+// matches on chain check
+pub const MAX_AGE: u64 = 300;

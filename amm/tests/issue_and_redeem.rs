@@ -162,7 +162,7 @@ async fn test_issue_and_redeem() {
         let vault_state = Vault::load(&vault_account.data).unwrap();
 
         // init amm
-        let mut carrot_amm = CarrotAmm::new(CRT_VAULT, vault_state);
+        let mut carrot_amm = CarrotAmm::new(CRT_VAULT, vault_state, u64::MAX);
 
         // update account cache
         carrot_amm.update(&account_map).unwrap();

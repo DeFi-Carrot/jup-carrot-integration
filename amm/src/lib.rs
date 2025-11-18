@@ -33,10 +33,11 @@ pub struct CarrotAmm {
     pub vault_state: Vault,
     pub shares_state: Option<SharesState>,
     pub asset_state: Vec<AssetState>,
+    pub oracle_max_age: u64,
 }
 
 impl CarrotAmm {
-    pub fn new(vault: Pubkey, vault_state: Vault) -> Self {
+    pub fn new(vault: Pubkey, vault_state: Vault, oracle_max_age: u64) -> Self {
         CarrotAmm {
             label: AMM_LABEL.to_owned(),
             program_id: CARROT_PROGRAM,
@@ -44,6 +45,7 @@ impl CarrotAmm {
             vault_state,
             asset_state: vec![],
             shares_state: None,
+            oracle_max_age,
         }
     }
 
@@ -72,6 +74,7 @@ impl Clone for CarrotAmm {
             vault_state: self.vault_state.clone(),
             asset_state: self.asset_state.clone(),
             shares_state: self.shares_state,
+            oracle_max_age: self.oracle_max_age,
         }
     }
 }
@@ -169,7 +172,11 @@ impl Amm for CarrotAmm {
     fn from_keyed_account(keyed_account: &KeyedAccount, _amm_context: &AmmContext) -> Result<Self> {
         let vault_state = Vault::load(&keyed_account.account.data)?;
 
-        Ok(CarrotAmm::new(keyed_account.key, vault_state))
+        Ok(CarrotAmm::new(
+            keyed_account.key,
+            vault_state,
+            state::MAX_AGE,
+        ))
     }
 
     fn label(&self) -> String {
@@ -235,7 +242,8 @@ impl Amm for CarrotAmm {
             let oracle = PriceUpdateV2::load(oracle_data)?;
 
             // get price adjusted by confidence interval
-            let (price, expo) = oracle.get_price_usd_from_pyth_oracle(state::RoundingMode::Avg);
+            let (price, expo) = oracle
+                .get_price_usd_from_pyth_oracle(self.oracle_max_age, state::RoundingMode::Avg)?;
 
             asset_state.push(AssetState {
                 asset_id: asset.asset_id,
