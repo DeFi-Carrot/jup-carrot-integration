@@ -1,5 +1,3 @@
-use std::u64;
-
 use amm::constants::{CRT_MINT, CRT_VAULT, USDC_MINT};
 use amm::{state::Vault, CarrotAmm};
 use jupiter_amm_interface::{Amm, QuoteParams, SwapMode};
