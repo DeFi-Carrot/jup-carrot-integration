@@ -16,7 +16,7 @@ async fn test_quote_issue() {
     let vault_state: Vault = Vault::load(&vault_account.data).unwrap();
 
     // init amm
-    let mut carrot_amm = CarrotAmm::new(CRT_VAULT, vault_state);
+    let mut carrot_amm = CarrotAmm::new(CRT_VAULT, vault_state, u64::MAX);
 
     // update related accounts, required before calling quote
     carrot_amm.update(&account_map).unwrap();
