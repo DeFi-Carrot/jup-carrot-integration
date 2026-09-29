@@ -653,6 +653,5 @@ pub enum RoundingMode {
     Avg,
 }
 
-// oracle price max age allowed in seconds
-// matches on chain check
-pub const MAX_AGE: u64 = 300;
+// 30 minutes. Matches the on-chain check. The sponsored PYUSD shard posts about every 1170 seconds.
+pub const MAX_AGE: u64 = 1_800;
