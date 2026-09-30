@@ -13,7 +13,7 @@ pub const PYUSD_VAULT_ATA: Pubkey = pubkey!("4cugtfkFydmoPe9CZJ4wFZzDUEmGJFNaThv
 // mint oracles
 pub const USDC_ORACLE: Pubkey = pubkey!("Dpw1EAVrSB1ibxiDQyTAW6Zip3J4Btk2x4SgApQCeFbX");
 pub const USDT_ORACLE: Pubkey = pubkey!("HT2PLQBcG5EiCcNSaMHAjSgd9F98ecpATbk4Sk5oYuM");
-pub const PYUSD_ORACLE: Pubkey = pubkey!("9zXQxpYH3kYhtoybmZfUNNCRVuud7fY9jswTg1hLyT8k");
+pub const PYUSD_ORACLE: Pubkey = pubkey!("F1huL4wkpzHLezvKMXQMgrL6SN7CkG9fYWm4VWSmVbjw");
 
 // crt vault
 pub const CRT_MINT: Pubkey = pubkey!("CRTx1JouZhzSU6XytsE42UQraoGqiHgxabocVfARTy2s");
