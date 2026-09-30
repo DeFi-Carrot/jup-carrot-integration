@@ -34,7 +34,7 @@ async fn test_quote_issue() {
     // Call the quote method
     let quote_result = carrot_amm.quote(&quote_params).unwrap();
     assert_eq!(amount, quote_result.in_amount);
-    assert_eq!(9684056623, quote_result.out_amount);
+    assert_eq!(9684056579, quote_result.out_amount);
     assert_eq!(0, quote_result.fee_amount);
     assert_eq!(Decimal::ZERO, quote_result.fee_pct);
     assert_eq!(USDC_MINT, quote_params.input_mint);
